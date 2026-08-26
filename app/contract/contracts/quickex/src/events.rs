@@ -284,6 +284,12 @@ pub const EVENT_SCHEMAS: &[EventSchema] = &[
         payload_keys: &["allowed", "schema_version", "timestamp"],
         schema_version: EVENT_SCHEMA_VERSION,
     },
+    EventSchema {
+        name: "UpgradeWindowChanged",
+        topics: &[EVENT_TOPIC_ADMIN, "UpgradeWindowChanged", "admin"],
+        payload_keys: &["window_start", "window_end", "schema_version", "timestamp"],
+        schema_version: EVENT_SCHEMA_VERSION,
+    },
 ];
 
 #[allow(dead_code)]
@@ -1171,6 +1177,34 @@ pub(crate) fn publish_hook_allowlist_changed(env: &Env, hook_contract: Address, 
         hook_contract,
         schema_version: EVENT_SCHEMA_VERSION,
         allowed,
+        timestamp: env.ledger().timestamp(),
+    }
+    .publish(env);
+}
+
+#[contractevent(topics = ["TOPIC_ADMIN", "UpgradeWindowChanged"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeWindowChangedEvent {
+    #[topic]
+    pub admin: Address,
+
+    pub schema_version: u32,
+    pub window_start: u64,
+    pub window_end: u64,
+    pub timestamp: u64,
+}
+
+pub(crate) fn publish_upgrade_window_changed(
+    env: &Env,
+    admin: &Address,
+    window_start: u64,
+    window_end: u64,
+) {
+    UpgradeWindowChangedEvent {
+        admin: admin.clone(),
+        schema_version: EVENT_SCHEMA_VERSION,
+        window_start,
+        window_end,
         timestamp: env.ledger().timestamp(),
     }
     .publish(env);

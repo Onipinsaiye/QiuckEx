@@ -377,10 +377,9 @@ pub fn is_emergency_mode(env: &Env) -> bool {
 /// Set the upgrade window: [start, end] in ledger seconds (epoch).
 /// - `start`: ledger timestamp when upgrades are allowed to begin. 0 = unset.
 /// - `end`: ledger timestamp after which upgrades are blocked. 0 = no upper bound.
-pub fn set_upgrade_window(env: &Env, start: u64, end: u64) {
+pub fn set_upgrade_window(env: &Env, start: u64, end: u64) -> Result<(), crate::errors::QuickexError> {
     if end != 0 && end <= start {
-        // Invalid window; silently ignore or could panic depending on caller behavior
-        return;
+        return Err(crate::errors::QuickexError::InvalidAmount);
     }
     env.storage()
         .persistent()
@@ -388,6 +387,7 @@ pub fn set_upgrade_window(env: &Env, start: u64, end: u64) {
     env.storage()
         .persistent()
         .set(&DataKey::UpgradeWindowEnd, &end);
+    Ok(())
 }
 
 /// Get the current upgrade window.
