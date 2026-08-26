@@ -286,3 +286,34 @@ pub enum PauseReason {
     RegulatoryCompliance = 4,
     OperatorIntervention = 5,
 }
+
+/// Current pause status of the contract, including global and per-feature pauses.
+///
+/// Returned by [`crate::QuickexContract::get_pause_status`] to allow clients to query
+/// which operations are currently paused and why.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PauseStatus {
+    /// Whether global pause is active (blocks most operations).
+    pub is_globally_paused: bool,
+    /// Reason code for global pause (0 if not paused).
+    pub global_pause_reason: u32,
+    /// Bitmask of per-feature pause flags (1=Deposit, 2=Withdrawal, 4=Refund, 8=DepositWithCommitment, 16=SetPrivacy, 32=CreateAmountCommitment).
+    pub feature_pause_flags: u64,
+}
+
+/// Fee collector rotation history entry tracking when collectors were rotated.
+///
+/// Stored in a Vec to maintain a chronological audit trail of fee collector changes.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeeCollectorRotationEntry {
+    /// Rotation index (incremented on each rotation).
+    pub rotation_index: u32,
+    /// The collector address set at this rotation.
+    pub collector: Address,
+    /// Previous collector address (for audit trail).
+    pub previous_collector: Option<Address>,
+    /// Ledger timestamp when this rotation occurred.
+    pub rotated_at: u64,
+}

@@ -284,6 +284,12 @@ pub const EVENT_SCHEMAS: &[EventSchema] = &[
         payload_keys: &["allowed", "schema_version", "timestamp"],
         schema_version: EVENT_SCHEMA_VERSION,
     },
+    EventSchema {
+        name: "PrivacyAccessAttempt",
+        topics: &[EVENT_TOPIC_PRIVACY, "PrivacyAccessAttempt", "caller"],
+        payload_keys: &["owner", "was_redacted", "schema_version", "timestamp"],
+        schema_version: EVENT_SCHEMA_VERSION,
+    },
 ];
 
 #[allow(dead_code)]
@@ -387,6 +393,34 @@ pub(crate) fn publish_privacy_toggled(env: &Env, owner: Address, enabled: bool) 
         owner,
         schema_version: EVENT_SCHEMA_VERSION,
         enabled,
+        timestamp: env.ledger().timestamp(),
+    }
+    .publish(env);
+}
+
+#[contractevent(topics = ["TOPIC_PRIVACY", "PrivacyAccessAttempt"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PrivacyAccessAttemptEvent {
+    #[topic]
+    pub caller: Address,
+
+    pub owner: Address,
+    pub was_redacted: bool,
+    pub schema_version: u32,
+    pub timestamp: u64,
+}
+
+pub(crate) fn publish_privacy_access_attempt(
+    env: &Env,
+    caller: Address,
+    owner: Address,
+    was_redacted: bool,
+) {
+    PrivacyAccessAttemptEvent {
+        caller,
+        owner,
+        was_redacted,
+        schema_version: EVENT_SCHEMA_VERSION,
         timestamp: env.ledger().timestamp(),
     }
     .publish(env);

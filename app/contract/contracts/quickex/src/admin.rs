@@ -431,6 +431,11 @@ pub fn set_platform_wallet(
 }
 
 /// Rotate active fee collector (**Admin only**).
+///
+/// Enforces a 24-hour cooldown between rotations and maintains rotation history.
+///
+/// # Errors
+/// * `InvalidAmount` – Cooldown period has not elapsed since the last rotation
 pub fn rotate_fee_collector(
     env: &Env,
     caller: &Address,
@@ -438,7 +443,7 @@ pub fn rotate_fee_collector(
 ) -> Result<u32, QuickexError> {
     require_admin(env, caller)?;
 
-    let next_index = fee_router::rotate_collector(env, &new_collector);
+    let next_index = fee_router::rotate_collector(env, &new_collector)?;
     publish_fee_collector_rotated(env, new_collector, next_index);
     Ok(next_index)
 }
