@@ -620,7 +620,7 @@ function DashboardContent() {
                           @{bid.username}
                         </p>
                         <p className="text-[11px] text-muted">
-                          My bid: {bid.myBid} USDC. Ends{" "}
+                          My bid: {bid.myBid} USDC. Current: {bid.currentBid} USDC. Ends{" "}
                           {formatCountdown(bid.endsAt)}
                         </p>
                       </div>

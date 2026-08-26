@@ -1,5 +1,5 @@
 import { Link } from "expo-router";
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -8,7 +8,7 @@ import {
   getWalletSession,
   isSessionRestorable,
 } from "@/services/wallet-session";
-import { getSessionExpiryExplanation, isBiometricSessionValid } from "@/services/security";
+import { getSessionExpiryExplanation } from "@/services/security";
 import { useTheme } from "../src/theme/ThemeContext";
 
 interface SecurityCheckItem {
@@ -25,9 +25,18 @@ export default function SecurityCenterScreen() {
   const { isBiometricAvailable, hasPinConfigured, settings } = useSecurity();
 
   const [securityItems, setSecurityItems] = useState<SecurityCheckItem[]>([]);
+  const [walletSession, setWalletSession] = useState<Awaited<ReturnType<typeof getWalletSession>>>(null);
+  const [sessionExplanation, setSessionExplanation] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
-  useEffect(() => {
-    const loadSecurityChecks = async () => {
+  const loadSecurityChecks = useCallback(async (isRefresh = false) => {
+      if (isRefresh) {
+        setRefreshing(true);
+      } else {
+        setLoading(true);
+      }
+
       const items: SecurityCheckItem[] = [];
 
       // Check biometrics
@@ -83,6 +92,8 @@ export default function SecurityCenterScreen() {
 
       // Check wallet session
       const session = await getWalletSession();
+      setWalletSession(session);
+      setSessionExplanation(await getSessionExpiryExplanation());
       if (session) {
         const isRestorable = isSessionRestorable(session);
         if (isRestorable) {
@@ -115,10 +126,13 @@ export default function SecurityCenterScreen() {
       }
 
       setSecurityItems(items);
-    };
-
-    loadSecurityChecks();
+      setLoading(false);
+      setRefreshing(false);
   }, [isBiometricAvailable, hasPinConfigured, settings]);
+
+  useEffect(() => {
+    void loadSecurityChecks();
+  }, [loadSecurityChecks]);
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -173,6 +187,25 @@ export default function SecurityCenterScreen() {
           Review your security posture and take recommended actions.
         </Text>
 
+        <View style={styles.toolbar}>
+          <Text
+            style={[styles.updatedText, { color: theme.textSecondary }]}
+          >
+            {loading ? "Checking device security..." : "Security checks run on this device"}
+          </Text>
+          <Pressable
+            onPress={() => void loadSecurityChecks(true)}
+            disabled={loading || refreshing}
+            style={[styles.refreshButton, { borderColor: theme.border }]}
+          >
+            <Text
+              style={[styles.refreshButtonText, { color: theme.textPrimary }]}
+            >
+              {refreshing ? "Refreshing..." : "Refresh"}
+            </Text>
+          </Pressable>
+        </View>
+
         {/* Overall Security Score */}
         <View
           style={[
@@ -198,7 +231,9 @@ export default function SecurityCenterScreen() {
           >
             {securityLevel}
           </Text>
-          <Text style={[styles.scoreDetail, { color: theme.textSecondary }]}>
+          <Text
+            style={[styles.scoreDetail, { color: theme.textSecondary }]}
+          >
             {overallScore} of {totalItems} checks passed
           </Text>
         </View>
@@ -266,6 +301,38 @@ export default function SecurityCenterScreen() {
             )}
           </View>
         ))}
+
+        <Text
+          style={[styles.sectionTitle, { color: theme.textPrimary }]}
+        >
+          Active Session
+        </Text>
+        <View
+          style={[
+            styles.card,
+            { backgroundColor: theme.surface, borderColor: theme.border },
+          ]}
+        >
+          {walletSession ? (
+            <>
+              <View style={styles.sessionHeader}>
+                <View style={[styles.sessionDot, { backgroundColor: "#10B981" }]} />
+                <Text style={[styles.rowTitle, { color: theme.textPrimary }]}>Wallet connected</Text>
+              </View>
+              <Text style={[styles.sessionValue, { color: theme.textPrimary }]}>
+                {walletSession.walletType} · {walletSession.network}
+              </Text>
+              <Text style={[styles.sessionKey, { color: theme.textSecondary }]}>
+                {walletSession.publicKey.slice(0, 8)}...{walletSession.publicKey.slice(-8)}
+              </Text>
+              <Text style={[styles.sessionExplanation, { color: theme.textSecondary }]}>
+                Connected {new Date(walletSession.connectedAt).toLocaleString()}. {sessionExplanation}
+              </Text>
+            </>
+          ) : (
+            <Text style={[styles.rowBody, { color: theme.textSecondary }]}>No wallet session is currently stored on this device.</Text>
+          )}
+        </View>
 
         {/* Quick Links */}
         <Text style={[styles.sectionTitle, { color: theme.textPrimary }]}>
@@ -370,6 +437,26 @@ const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 22,
   },
+  toolbar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  updatedText: {
+    flex: 1,
+    fontSize: 12,
+  },
+  refreshButton: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+  },
+  refreshButtonText: {
+    fontSize: 13,
+    fontWeight: "700",
+  },
   scoreCard: {
     borderRadius: 16,
     padding: 20,
@@ -439,6 +526,32 @@ const styles = StyleSheet.create({
   actionButtonText: {
     fontSize: 14,
     fontWeight: "700",
+  },
+  sessionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  sessionDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  sessionValue: {
+    marginTop: 12,
+    fontSize: 15,
+    fontWeight: "700",
+    textTransform: "capitalize",
+  },
+  sessionKey: {
+    marginTop: 5,
+    fontFamily: "monospace",
+    fontSize: 12,
+  },
+  sessionExplanation: {
+    marginTop: 10,
+    fontSize: 13,
+    lineHeight: 19,
   },
   card: {
     borderRadius: 16,
