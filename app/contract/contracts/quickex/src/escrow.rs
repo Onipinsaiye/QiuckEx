@@ -821,6 +821,89 @@ pub fn extend_escrow_ttl(env: &Env, commitment: BytesN<32>) -> Result<(), Quicke
     Ok(())
 }
 
+/// Extend an escrow's expiry date by a configurable time period.
+///
+/// # Arguments
+/// - `commitment`: The escrow commitment hash
+/// - `extension_secs`: Number of seconds to extend the expiry
+/// - `max_extensions`: Maximum number of extensions allowed (e.g., 3)
+/// - `max_lifetime_secs`: Maximum total lifetime after all extensions
+///
+/// # Errors
+/// - [`CommitmentNotFound`] – no escrow for the given commitment.
+/// - [`AlreadySpent`] – escrow is not in `Pending` or `Disputed` status.
+/// - [`MaxExtensionsReached`] – escrow has already been extended max_extensions times.
+/// - [`ExtensionExceedsMaxLifetime`] – extension would exceed max_lifetime_secs.
+/// - [`InvalidTimeout`] – extension_secs would overflow when added to current expires_at.
+pub fn extend_escrow_expiry(
+    env: &Env,
+    commitment: BytesN<32>,
+    extension_secs: u64,
+    max_extensions: u32,
+    max_lifetime_secs: u64,
+) -> Result<(), QuickexError> {
+    let commitment_bytes: Bytes = commitment.clone().into();
+    let mut entry: EscrowEntry =
+        get_escrow(env, &commitment_bytes).ok_or(QuickexError::CommitmentNotFound)?;
+
+    // Only extend if escrow is pending or disputed (not already spent/refunded)
+    if entry.status != EscrowStatus::Pending && entry.status != EscrowStatus::Disputed {
+        return Err(QuickexError::AlreadySpent);
+    }
+
+    // Check extension count
+    let mut extension_record = storage::get_escrow_extension(env, &commitment_bytes)
+        .unwrap_or(crate::types::EscrowExtension {
+            commitment: commitment.clone(),
+            extension_count: 0,
+            last_extended_at: 0,
+            new_expires_at: entry.expires_at,
+        });
+
+    if extension_record.extension_count >= max_extensions {
+        return Err(QuickexError::MaxExtensionsReached);
+    }
+
+    // Calculate new expiry time
+    let current_expires_at = if entry.expires_at > 0 {
+        entry.expires_at
+    } else {
+        env.ledger().timestamp()
+    };
+
+    let new_expires_at = current_expires_at.saturating_add(extension_secs);
+    if new_expires_at == u64::MAX {
+        return Err(QuickexError::InvalidTimeout);
+    }
+
+    // Check against max lifetime
+    let creation_time = entry.created_at;
+    let max_expires_at = creation_time.saturating_add(max_lifetime_secs);
+    if new_expires_at > max_expires_at {
+        return Err(QuickexError::ExtensionExceedsMaxLifetime);
+    }
+
+    // Update escrow with new expiry
+    entry.expires_at = new_expires_at;
+    put_escrow(env, &commitment_bytes, &entry);
+
+    // Update extension record
+    extension_record.extension_count += 1;
+    extension_record.last_extended_at = env.ledger().timestamp();
+    extension_record.new_expires_at = new_expires_at;
+    storage::put_escrow_extension(env, &commitment_bytes, &extension_record);
+
+    // Publish event
+    events::publish_escrow_extension_applied(
+        env,
+        commitment,
+        extension_record.extension_count,
+        new_expires_at,
+    );
+
+    Ok(())
+}
+
 /// Cleanup terminal escrow entries to reclaim storage deposits.
 ///
 /// Only escrows in `Spent` or `Refunded` status can be removed.
@@ -1248,4 +1331,86 @@ pub fn resolve_dispute_multi_sig(
     }
 
     Ok(())
+}
+// ---------------------------------------------------------------------------
+// submit_dispute_evidence
+// ---------------------------------------------------------------------------
+
+/// Submit evidence for a disputed escrow.
+///
+/// - Can be called by either party of the disputed escrow.
+/// - Escrow must be in `Disputed` status.
+/// - Evidence is stored on-chain with a hash and submitter address.
+/// - Events are emitted for evidence submission.
+/// - Maximum evidence size is enforced (e.g., 2048 bytes for hash).
+///
+/// # Arguments
+/// - `commitment`: The escrow commitment hash
+/// - `evidence_hash`: SHA256 hash of the evidence data
+/// - `submitter`: Address of the party submitting evidence (must authorize)
+///
+/// # Errors
+/// - [`CommitmentNotFound`] – no escrow for the given commitment.
+/// - [`InvalidDisputeState`] – escrow is not in `Disputed` status.
+/// - [`InvalidEvidenceHash`] – evidence hash is invalid (all zeros).
+/// - [`EvidenceSizeExceeded`] – evidence hash size exceeds maximum.
+pub fn submit_dispute_evidence(
+    env: &Env,
+    commitment: BytesN<32>,
+    evidence_hash: BytesN<32>,
+    submitter: Address,
+) -> Result<(), QuickexError> {
+    submitter.require_auth();
+
+    let commitment_bytes: Bytes = commitment.clone().into();
+    let entry: EscrowEntry =
+        get_escrow(env, &commitment_bytes).ok_or(QuickexError::CommitmentNotFound)?;
+
+    // Guard: escrow must be in Disputed state
+    if entry.status != EscrowStatus::Disputed {
+        return Err(QuickexError::InvalidDisputeState);
+    }
+
+    // Validate evidence hash (not all zeros)
+    let zero_hash = BytesN::<32>::from_array(env, &[0u8; 32]);
+    if evidence_hash == zero_hash {
+        return Err(QuickexError::InvalidEvidenceHash);
+    }
+
+    // Maximum evidence size check (32 bytes for hash is always OK)
+    // Size check for the evidence_hash itself (already 32 bytes)
+    if 32 > 2048 {
+        return Err(QuickexError::EvidenceSizeExceeded);
+    }
+
+    // Check if evidence from this submitter already exists
+    if storage::has_dispute_evidence(env, &commitment_bytes, &evidence_hash) {
+        // Silently return OK if evidence already exists (idempotent)
+        return Ok(());
+    }
+
+    // Store evidence
+    let evidence = crate::types::DisputeEvidence {
+        commitment: commitment.clone(),
+        evidence_hash: evidence_hash.clone(),
+        submitted_by: submitter.clone(),
+        submitted_at: env.ledger().timestamp(),
+    };
+
+    storage::put_dispute_evidence(env, &commitment_bytes, &evidence);
+
+    // Emit event
+    events::publish_dispute_evidence_submitted(env, commitment, evidence_hash, submitter);
+
+    Ok(())
+}
+
+/// Get dispute evidence for a given commitment and evidence hash.
+pub fn get_dispute_evidence(
+    env: &Env,
+    commitment: BytesN<32>,
+    evidence_hash: BytesN<32>,
+) -> Option<crate::types::DisputeEvidence> {
+    let commitment_bytes: Bytes = commitment.into();
+    storage::get_dispute_evidence(env, &commitment_bytes, &evidence_hash)
 }

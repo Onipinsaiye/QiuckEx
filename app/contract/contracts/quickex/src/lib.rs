@@ -761,6 +761,73 @@ impl QuickexContract {
         escrow::resolve_dispute_multi_sig(&env, commitment, recipient)
     }
 
+    /// Extend an escrow's expiry date by a configurable time period (Issue #113).
+    ///
+    /// Allows extensions with configurable time periods and maximum extension limits.
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment
+    /// * `commitment` - 32-byte commitment hash identifying the escrow
+    /// * `extension_secs` - Number of seconds to extend the expiry
+    /// * `max_extensions` - Maximum number of extensions allowed (e.g., 3)
+    /// * `max_lifetime_secs` - Maximum total lifetime after all extensions
+    ///
+    /// # Errors
+    /// * `CommitmentNotFound` - No escrow exists for the commitment
+    /// * `AlreadySpent` - Escrow is not in `Pending` or `Disputed` status
+    /// * `MaxExtensionsReached` - Escrow has already been extended max_extensions times
+    /// * `ExtensionExceedsMaxLifetime` - Extension would exceed max_lifetime_secs
+    /// * `InvalidTimeout` - extension_secs would overflow
+    pub fn extend_escrow_expiry(
+        env: Env,
+        commitment: BytesN<32>,
+        extension_secs: u64,
+        max_extensions: u32,
+        max_lifetime_secs: u64,
+    ) -> Result<(), QuickexError> {
+        admin::require_initialized(&env)?;
+        pause_policy::require_entry_allowed(&env, EntryPoint::ExtendEscrowExpiry)?;
+        escrow::extend_escrow_expiry(&env, commitment, extension_secs, max_extensions, max_lifetime_secs)
+    }
+
+    /// Submit evidence for a disputed escrow (Issue #115).
+    ///
+    /// Evidence can be submitted by either party during a dispute. Evidence is stored
+    /// on-chain with a SHA256 hash and is visible to the arbiter and both parties.
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment
+    /// * `commitment` - 32-byte commitment hash identifying the disputed escrow
+    /// * `evidence_hash` - SHA256 hash of the evidence data
+    /// * `submitter` - Address of the party submitting evidence (must authorize)
+    ///
+    /// # Errors
+    /// * `CommitmentNotFound` - No escrow exists for the commitment
+    /// * `InvalidDisputeState` - Escrow is not in `Disputed` status
+    /// * `InvalidEvidenceHash` - Evidence hash is all zeros
+    /// * `EvidenceSizeExceeded` - Evidence exceeds maximum allowed size
+    pub fn submit_dispute_evidence(
+        env: Env,
+        commitment: BytesN<32>,
+        evidence_hash: BytesN<32>,
+        submitter: Address,
+    ) -> Result<(), QuickexError> {
+        admin::require_initialized(&env)?;
+        escrow::submit_dispute_evidence(&env, commitment, evidence_hash, submitter)
+    }
+
+    /// Get dispute evidence for a commitment and evidence hash (Issue #115).
+    ///
+    /// Returns the evidence record if it exists, allowing arbiters and parties
+    /// to review evidence submitted during a dispute.
+    pub fn get_dispute_evidence(
+        env: Env,
+        commitment: BytesN<32>,
+        evidence_hash: BytesN<32>,
+    ) -> Option<crate::types::DisputeEvidence> {
+        escrow::get_dispute_evidence(&env, commitment, evidence_hash)
+    }
+
     /// Initialize the contract with an admin address (one-time only).
     ///
     /// Sets the admin who can pause/unpause, transfer admin, and upgrade the contract.
