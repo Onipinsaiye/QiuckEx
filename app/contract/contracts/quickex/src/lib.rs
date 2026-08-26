@@ -208,6 +208,7 @@ impl QuickexContract {
     /// * `salt` - Random salt (0–1024 bytes) for uniqueness
     /// * `timeout_secs` - Seconds from now until the escrow expires (0 = no expiry)
     /// * `arbiter` - Optional arbiter address who can resolve disputes
+    /// * `memo` - Optional memo text (max 1024 bytes), visible to owner and recipient
     ///
     /// # Errors
     /// * `InvalidAmount` - Amount is zero or negative
@@ -222,6 +223,7 @@ impl QuickexContract {
         salt: Bytes,
         timeout_secs: u64,
         arbiter: Option<Address>,
+        memo: Option<String>,
         nonce: u64,
         valid_until: u64,
     ) -> Result<BytesN<32>, QuickexError> {
@@ -257,6 +259,7 @@ impl QuickexContract {
             salt,
             timeout_secs,
             arbiter,
+            memo,
             nonce,
             valid_until,
         )
@@ -370,6 +373,7 @@ impl QuickexContract {
     /// * `commitment` - 32-byte commitment hash (must be unique)
     /// * `timeout_secs` - Seconds from now until the escrow expires (0 = no expiry)
     /// * `arbiter` - Optional arbiter address who can resolve disputes
+    /// * `memo` - Optional memo text (max 1024 bytes), visible to owner and recipient
     ///
     /// # Errors
     /// * `InvalidAmount` - Amount is zero or negative
@@ -383,6 +387,7 @@ impl QuickexContract {
         commitment: BytesN<32>,
         timeout_secs: u64,
         arbiter: Option<Address>,
+        memo: Option<String>,
         nonce: u64,
         valid_until: u64,
     ) -> Result<(), QuickexError> {
@@ -418,6 +423,7 @@ impl QuickexContract {
             commitment,
             timeout_secs,
             arbiter,
+            memo,
             nonce,
             valid_until,
         )
@@ -452,6 +458,8 @@ impl QuickexContract {
     /// * `salt` - Random salt (0–1024 bytes) for uniqueness
     /// * `timeout_secs` - Seconds from now until the escrow expires (0 = no expiry)
     /// * `arbiter` - Optional arbiter address who can resolve disputes
+    /// * `memo` - Optional memo text (max 1024 bytes)
+    /// * `milestones` - Array of milestones for tracking partial payment progress
     ///
     /// # Errors
     /// * `InvalidAmount` - initial_payment ≤ 0 or amount_due ≤ 0
@@ -467,6 +475,8 @@ impl QuickexContract {
         salt: Bytes,
         timeout_secs: u64,
         arbiter: Option<Address>,
+        memo: Option<String>,
+        milestones: Vec<types::Milestone>,
         nonce: u64,
         valid_until: u64,
     ) -> Result<BytesN<32>, QuickexError> {
@@ -503,6 +513,8 @@ impl QuickexContract {
             salt,
             timeout_secs,
             arbiter,
+            memo,
+            milestones,
             nonce,
             valid_until,
         )
@@ -1203,6 +1215,7 @@ impl QuickexContract {
                 created_at: entry.created_at,
                 expires_at: entry.expires_at,
                 arbiter: entry.arbiter,
+                memo: entry.memo,
             })
         } else {
             Some(PrivacyAwareEscrowView {
@@ -1214,6 +1227,7 @@ impl QuickexContract {
                 created_at: entry.created_at,
                 expires_at: entry.expires_at,
                 arbiter: None,
+                memo: None,
             })
         }
     }

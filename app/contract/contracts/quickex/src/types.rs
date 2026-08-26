@@ -2,7 +2,34 @@
 //!
 //! See [`crate::storage`] for the storage schema and key layout.
 
-use soroban_sdk::{contracttype, Address, BytesN, Vec};
+use soroban_sdk::{contracttype, Address, BytesN, String, Vec};
+
+/// Maximum memo length (1024 bytes).
+pub const MAX_MEMO_LENGTH: u32 = 1024;
+
+/// Milestone tracking for partial payments.
+#[contracttype]
+#[derive(Clone)]
+pub struct Milestone {
+    /// Unique milestone identifier.
+    pub id: u32,
+    /// Description of the milestone.
+    pub description: String,
+    /// Amount required for this milestone.
+    pub amount: i128,
+    /// Whether this milestone has been completed.
+    pub completed: bool,
+}
+
+/// Memo attached to an escrow.
+#[contracttype]
+#[derive(Clone)]
+pub struct Memo {
+    /// The memo text (max 1024 bytes).
+    pub text: String,
+    /// Ledger timestamp when memo was set.
+    pub set_at: u64,
+}
 
 /// Escrow entry status.
 ///
@@ -57,6 +84,10 @@ pub struct EscrowEntry {
     /// A value of 0 means single-arbiter mode (uses `arbiter` field).
     /// A value > 0 means multi-sig mode (uses `arbiters` array).
     pub arbiter_threshold: u32,
+    /// Optional memo attached to the escrow (max 1024 bytes).
+    pub memo: Option<String>,
+    /// Array of milestones for tracking partial payment progress.
+    pub milestones: Vec<Milestone>,
 }
 
 /// Privacy-aware view of an escrow entry.
@@ -76,6 +107,7 @@ pub struct EscrowEntry {
 /// | `amount_due` | ✓           | ✓                            | `None`                          |
 /// | `amount_paid`| ✓           | ✓                            | `None`                          |
 /// | `owner`      | ✓           | ✓                            | `None`                          |
+/// | `memo`       | ✓           | ✓                            | `None`                          |
 #[contracttype]
 #[derive(Clone)]
 pub struct PrivacyAwareEscrowView {
@@ -95,6 +127,8 @@ pub struct PrivacyAwareEscrowView {
     pub expires_at: u64,
     /// Arbiter address for dispute resolution. `None` if not set.
     pub arbiter: Option<Address>,
+    /// Optional memo. `None` when privacy is enabled and caller is not the owner.
+    pub memo: Option<String>,
 }
 
 /// Arbiter vote on a disputed escrow.

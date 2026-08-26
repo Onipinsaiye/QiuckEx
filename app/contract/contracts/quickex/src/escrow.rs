@@ -139,6 +139,7 @@ fn compute_expires_at(env: &Env, timeout_secs: u64) -> Result<u64, QuickexError>
 /// - If `timeout_secs > 0`, the escrow expires `timeout_secs` seconds after creation.
 ///   Pass `0` for a non-expiring escrow.
 /// - Optionally sets an `arbiter` who can resolve disputes.
+/// - Optionally stores a memo (max 1024 bytes).
 ///
 /// # Errors
 /// - [`InvalidAmount`] – amount ≤ 0.
@@ -152,6 +153,7 @@ pub fn deposit(
     salt: Bytes,
     timeout_secs: u64,
     arbiter: Option<Address>,
+    memo: Option<soroban_sdk::String>,
     nonce_val: u64,
     valid_until: u64,
 ) -> Result<BytesN<32>, QuickexError> {
@@ -203,6 +205,8 @@ pub fn deposit(
         arbiter,
         arbiters: Vec::new(env),
         arbiter_threshold: 0,
+        memo,
+        milestones: Vec::new(env),
     };
 
     put_escrow(env, &commitment_bytes, &entry);
@@ -242,6 +246,7 @@ pub fn deposit(
 /// - Validates commitment uniqueness.
 /// - If `timeout_secs > 0`, the escrow expires after that many seconds.
 /// - Optionally sets an `arbiter` who can resolve disputes.
+/// - Optionally stores a memo (max 1024 bytes).
 ///
 /// # Errors
 /// - [`InvalidAmount`] – amount ≤ 0.
@@ -256,6 +261,7 @@ pub fn deposit_with_commitment(
     commitment: BytesN<32>,
     timeout_secs: u64,
     arbiter: Option<Address>,
+    memo: Option<soroban_sdk::String>,
     nonce_val: u64,
     valid_until: u64,
 ) -> Result<(), QuickexError> {
@@ -299,6 +305,8 @@ pub fn deposit_with_commitment(
         arbiter,
         arbiters: Vec::new(env),
         arbiter_threshold: 0,
+        memo,
+        milestones: Vec::new(env),
     };
 
     put_escrow(env, &commitment_bytes, &entry);
@@ -338,6 +346,8 @@ pub fn deposit_with_commitment(
 /// - If `timeout_secs > 0`, the escrow expires `timeout_secs` seconds after creation.
 ///   Pass `0` for a non-expiring escrow.
 /// - Optionally sets an `arbiter` who can resolve disputes.
+/// - Optionally stores a memo (max 1024 bytes).
+/// - Tracks milestones for partial payment progress.
 ///
 /// # Errors
 /// - [`InvalidAmount`] – initial_payment ≤ 0 or amount_due ≤ 0.
@@ -352,6 +362,8 @@ pub fn deposit_partial(
     salt: Bytes,
     timeout_secs: u64,
     arbiter: Option<Address>,
+    memo: Option<soroban_sdk::String>,
+    milestones: Vec<crate::types::Milestone>,
     nonce_val: u64,
     valid_until: u64,
 ) -> Result<BytesN<32>, QuickexError> {
@@ -391,6 +403,8 @@ pub fn deposit_partial(
         arbiter,
         arbiters: Vec::new(env),
         arbiter_threshold: 0,
+        memo,
+        milestones,
     };
 
     put_escrow(env, &commitment_bytes, &entry);
@@ -428,8 +442,10 @@ pub fn deposit_partial(
 ///
 /// - Transfers `payment_amount` from `payer` to the contract.
 /// - Increments `amount_paid` by the payment amount.
+/// - Updates milestone completion status based on cumulative payment.
 /// - Rejects overpayment (payment_amount > remaining amount due).
 /// - Emits a `PartialPayment` event.
+/// - Emits `MilestoneCompleted` events for milestones that are now complete.
 /// - If payment completes the escrow (amount_paid == amount_due), emits `EscrowFinalized`.
 ///
 /// # Errors
@@ -482,6 +498,20 @@ pub fn partial_payment(
 
     // Update amount_paid
     entry.amount_paid = entry.amount_paid.saturating_add(payment_amount);
+
+    // Track milestone completion
+    for milestone in entry.milestones.iter_mut() {
+        if !milestone.completed && entry.amount_paid >= milestone.amount {
+            milestone.completed = true;
+            events::publish_milestone_completed(
+                env,
+                commitment.clone(),
+                milestone.id,
+                milestone.amount,
+                entry.amount_paid,
+            );
+        }
+    }
 
     // Check if escrow is now fully paid
     let is_fully_paid = entry.amount_paid >= entry.amount_due;
