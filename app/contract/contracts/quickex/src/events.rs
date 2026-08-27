@@ -290,6 +290,28 @@ pub const EVENT_SCHEMAS: &[EventSchema] = &[
         payload_keys: &["allowed", "schema_version", "timestamp"],
         schema_version: EVENT_SCHEMA_VERSION,
     },
+    EventSchema {
+        name: "EscrowExtensionApplied",
+        topics: &[EVENT_TOPIC_ESCROW, "EscrowExtensionApplied", "escrow_id"],
+        payload_keys: &[
+            "extension_count",
+            "new_expires_at",
+            "schema_version",
+            "timestamp",
+        ],
+        schema_version: EVENT_SCHEMA_VERSION,
+    },
+    EventSchema {
+        name: "DisputeEvidenceSubmitted",
+        topics: &[EVENT_TOPIC_DISPUTE, "DisputeEvidenceSubmitted", "escrow_id"],
+        payload_keys: &[
+            "evidence_hash",
+            "submitted_by",
+            "schema_version",
+            "timestamp",
+        ],
+        schema_version: EVENT_SCHEMA_VERSION,
+    },
 ];
 
 #[allow(dead_code)]
@@ -1202,6 +1224,66 @@ pub(crate) fn publish_hook_allowlist_changed(env: &Env, hook_contract: Address, 
         hook_contract,
         schema_version: EVENT_SCHEMA_VERSION,
         allowed,
+        timestamp: env.ledger().timestamp(),
+    }
+    .publish(env);
+}
+
+// ---- Escrow extension events (Issue #113) ----
+
+#[contractevent(topics = ["TOPIC_ESCROW", "EscrowExtensionApplied"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EscrowExtensionAppliedEvent {
+    #[topic]
+    pub escrow_id: BytesN<32>,
+
+    pub schema_version: u32,
+    pub extension_count: u32,
+    pub new_expires_at: u64,
+    pub timestamp: u64,
+}
+
+pub(crate) fn publish_escrow_extension_applied(
+    env: &Env,
+    commitment: BytesN<32>,
+    extension_count: u32,
+    new_expires_at: u64,
+) {
+    EscrowExtensionAppliedEvent {
+        escrow_id: commitment,
+        schema_version: EVENT_SCHEMA_VERSION,
+        extension_count,
+        new_expires_at,
+        timestamp: env.ledger().timestamp(),
+    }
+    .publish(env);
+}
+
+// ---- Dispute evidence events (Issue #115) ----
+
+#[contractevent(topics = ["TOPIC_DISPUTE", "DisputeEvidenceSubmitted"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeEvidenceSubmittedEvent {
+    #[topic]
+    pub escrow_id: BytesN<32>,
+
+    pub schema_version: u32,
+    pub evidence_hash: BytesN<32>,
+    pub submitted_by: Address,
+    pub timestamp: u64,
+}
+
+pub(crate) fn publish_dispute_evidence_submitted(
+    env: &Env,
+    commitment: BytesN<32>,
+    evidence_hash: BytesN<32>,
+    submitted_by: Address,
+) {
+    DisputeEvidenceSubmittedEvent {
+        escrow_id: commitment,
+        schema_version: EVENT_SCHEMA_VERSION,
+        evidence_hash,
+        submitted_by,
         timestamp: env.ledger().timestamp(),
     }
     .publish(env);

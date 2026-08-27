@@ -286,3 +286,31 @@ pub enum PauseReason {
     RegulatoryCompliance = 4,
     OperatorIntervention = 5,
 }
+
+/// Escrow extension record for TTL renewal (Issue #113).
+#[contracttype]
+#[derive(Clone)]
+pub struct EscrowExtension {
+    /// Commitment hash of the escrow being extended.
+    pub commitment: BytesN<32>,
+    /// Number of times this escrow has been extended.
+    pub extension_count: u32,
+    /// Timestamp of the last extension.
+    pub last_extended_at: u64,
+    /// New expires_at value after this extension.
+    pub new_expires_at: u64,
+}
+
+/// Dispute evidence record (Issue #115).
+#[contracttype]
+#[derive(Clone)]
+pub struct DisputeEvidence {
+    /// Commitment hash of the disputed escrow.
+    pub commitment: BytesN<32>,
+    /// Hash of the evidence data (typically SHA256).
+    pub evidence_hash: BytesN<32>,
+    /// Address of the party submitting evidence.
+    pub submitted_by: Address,
+    /// Timestamp when evidence was submitted.
+    pub submitted_at: u64,
+}
