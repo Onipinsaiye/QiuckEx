@@ -11,6 +11,8 @@ export class MetricsService implements OnModuleInit {
   private ingestionLagSeconds: client.Gauge<string>;
   private webhookRetryTotal: client.Counter<string>;
   private webhookDeliveryDuration: client.Histogram<string>;
+  private webhookDeliverySuccessRate: client.Gauge<string>;
+  private webhookDlqSize: client.Gauge<string>;
   private externalCallDuration: client.Histogram<string>;
   private errorRate: client.Counter<string>;
   private sorobanRpcFailoverTotal: client.Counter<string>;
@@ -74,6 +76,18 @@ export class MetricsService implements OnModuleInit {
         help: "Duration of webhook delivery attempts in seconds",
         labelNames: ["event_type", "status"],
         buckets: [0.1, 0.5, 1, 2, 5, 10],
+      });
+
+      this.webhookDeliverySuccessRate = new client.Gauge({
+        name: "webhook_delivery_success_rate",
+        help: "Ratio (0-1) of successful webhook deliveries over total attempts",
+        labelNames: ["webhook_id"],
+      });
+
+      this.webhookDlqSize = new client.Gauge({
+        name: "webhook_dlq_size",
+        help: "Number of webhook deliveries currently in the dead-letter queue",
+        labelNames: ["webhook_id"],
       });
 
       this.externalCallDuration = new client.Histogram({
@@ -167,6 +181,8 @@ export class MetricsService implements OnModuleInit {
       this.register.registerMetric(this.ingestionLagSeconds);
       this.register.registerMetric(this.webhookRetryTotal);
       this.register.registerMetric(this.webhookDeliveryDuration);
+      this.register.registerMetric(this.webhookDeliverySuccessRate);
+      this.register.registerMetric(this.webhookDlqSize);
       this.register.registerMetric(this.externalCallDuration);
       this.register.registerMetric(this.errorRate);
       this.register.registerMetric(this.sorobanRpcFailoverTotal);
@@ -281,6 +297,24 @@ export class MetricsService implements OnModuleInit {
 
     try {
       this.webhookDeliveryDuration.labels(eventType, status).observe(duration);
+    } catch (error) {}
+  }
+
+  setWebhookDeliverySuccessRate(webhookId: string, rate: number) {
+    if (!this.initialized || !this.webhookDeliverySuccessRate) {
+      return;
+    }
+    try {
+      this.webhookDeliverySuccessRate.labels(webhookId).set(rate);
+    } catch (error) {}
+  }
+
+  setWebhookDlqSize(webhookId: string, size: number) {
+    if (!this.initialized || !this.webhookDlqSize) {
+      return;
+    }
+    try {
+      this.webhookDlqSize.labels(webhookId).set(size);
     } catch (error) {}
   }
 
