@@ -2,7 +2,34 @@
 //!
 //! See [`crate::storage`] for the storage schema and key layout.
 
-use soroban_sdk::{contracttype, Address, BytesN, Vec};
+use soroban_sdk::{contracttype, Address, BytesN, String, Vec};
+
+/// Maximum memo length (1024 bytes).
+pub const MAX_MEMO_LENGTH: u32 = 1024;
+
+/// Milestone tracking for partial payments.
+#[contracttype]
+#[derive(Clone)]
+pub struct Milestone {
+    /// Unique milestone identifier.
+    pub id: u32,
+    /// Description of the milestone.
+    pub description: String,
+    /// Amount required for this milestone.
+    pub amount: i128,
+    /// Whether this milestone has been completed.
+    pub completed: bool,
+}
+
+/// Memo attached to an escrow.
+#[contracttype]
+#[derive(Clone)]
+pub struct Memo {
+    /// The memo text (max 1024 bytes).
+    pub text: String,
+    /// Ledger timestamp when memo was set.
+    pub set_at: u64,
+}
 
 /// Escrow entry status.
 ///
@@ -57,6 +84,10 @@ pub struct EscrowEntry {
     /// A value of 0 means single-arbiter mode (uses `arbiter` field).
     /// A value > 0 means multi-sig mode (uses `arbiters` array).
     pub arbiter_threshold: u32,
+    /// Optional memo attached to the escrow (max 1024 bytes).
+    pub memo: Option<String>,
+    /// Array of milestones for tracking partial payment progress.
+    pub milestones: Vec<Milestone>,
 }
 
 /// Privacy-aware view of an escrow entry.
@@ -76,6 +107,7 @@ pub struct EscrowEntry {
 /// | `amount_due` | ✓           | ✓                            | `None`                          |
 /// | `amount_paid`| ✓           | ✓                            | `None`                          |
 /// | `owner`      | ✓           | ✓                            | `None`                          |
+/// | `memo`       | ✓           | ✓                            | `None`                          |
 #[contracttype]
 #[derive(Clone)]
 pub struct PrivacyAwareEscrowView {
@@ -95,6 +127,8 @@ pub struct PrivacyAwareEscrowView {
     pub expires_at: u64,
     /// Arbiter address for dispute resolution. `None` if not set.
     pub arbiter: Option<Address>,
+    /// Optional memo. `None` when privacy is enabled and caller is not the owner.
+    pub memo: Option<String>,
 }
 
 /// Arbiter vote on a disputed escrow.
@@ -287,33 +321,30 @@ pub enum PauseReason {
     OperatorIntervention = 5,
 }
 
-/// Current pause status of the contract, including global and per-feature pauses.
-///
-/// Returned by [`crate::QuickexContract::get_pause_status`] to allow clients to query
-/// which operations are currently paused and why.
+/// Escrow extension record for TTL renewal (Issue #113).
 #[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PauseStatus {
-    /// Whether global pause is active (blocks most operations).
-    pub is_globally_paused: bool,
-    /// Reason code for global pause (0 if not paused).
-    pub global_pause_reason: u32,
-    /// Bitmask of per-feature pause flags (1=Deposit, 2=Withdrawal, 4=Refund, 8=DepositWithCommitment, 16=SetPrivacy, 32=CreateAmountCommitment).
-    pub feature_pause_flags: u64,
+#[derive(Clone)]
+pub struct EscrowExtension {
+    /// Commitment hash of the escrow being extended.
+    pub commitment: BytesN<32>,
+    /// Number of times this escrow has been extended.
+    pub extension_count: u32,
+    /// Timestamp of the last extension.
+    pub last_extended_at: u64,
+    /// New expires_at value after this extension.
+    pub new_expires_at: u64,
 }
 
-/// Fee collector rotation history entry tracking when collectors were rotated.
-///
-/// Stored in a Vec to maintain a chronological audit trail of fee collector changes.
+/// Dispute evidence record (Issue #115).
 #[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FeeCollectorRotationEntry {
-    /// Rotation index (incremented on each rotation).
-    pub rotation_index: u32,
-    /// The collector address set at this rotation.
-    pub collector: Address,
-    /// Previous collector address (for audit trail).
-    pub previous_collector: Option<Address>,
-    /// Ledger timestamp when this rotation occurred.
-    pub rotated_at: u64,
+#[derive(Clone)]
+pub struct DisputeEvidence {
+    /// Commitment hash of the disputed escrow.
+    pub commitment: BytesN<32>,
+    /// Hash of the evidence data (typically SHA256).
+    pub evidence_hash: BytesN<32>,
+    /// Address of the party submitting evidence.
+    pub submitted_by: Address,
+    /// Timestamp when evidence was submitted.
+    pub submitted_at: u64,
 }

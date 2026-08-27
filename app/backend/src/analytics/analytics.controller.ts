@@ -1,8 +1,9 @@
-import { Controller, Get, Query, Req, Res, UseGuards } from '@nestjs/common';
+import { Controller, Get, Query, Req, Res, Sse, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { Request, Response } from 'express';
 import { ApiKeyGuard } from '../auth/guards/api-key.guard';
 import { AnalyticsService } from './analytics.service';
+import { AnalyticsEventsService } from './analytics-events.service';
 import {
   AnalyticsQueryDto,
   ExportReportQueryDto,
@@ -14,7 +15,16 @@ import {
 @UseGuards(ApiKeyGuard)
 @Controller('analytics')
 export class AnalyticsController {
-  constructor(private readonly analyticsService: AnalyticsService) {}
+  constructor(
+    private readonly analyticsService: AnalyticsService,
+    private readonly analyticsEventsService: AnalyticsEventsService,
+  ) {}
+
+  @Sse('events')
+  @ApiOperation({ summary: 'Stream analytics updates for a public key' })
+  events(@Query('publicKey') publicKey: string) {
+    return this.analyticsEventsService.stream(publicKey);
+  }
 
   @Get('report')
   @ApiOperation({

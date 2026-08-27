@@ -59,6 +59,14 @@ pub enum QuickexError {
     InsufficientVotes = 321,
     /// Hook contract is not allowed.
     HookNotAllowed = 322,
+    /// Maximum number of escrow extensions reached.
+    MaxExtensionsReached = 323,
+    /// Escrow extension would exceed maximum lifetime.
+    ExtensionExceedsMaxLifetime = 324,
+    /// Evidence hash is invalid or missing.
+    InvalidEvidenceHash = 325,
+    /// Evidence size exceeds maximum allowed.
+    EvidenceSizeExceeded = 326,
     // Stealth address errors (400-499)
     /// Derived stealth address does not match the provided one.
     StealthAddressMismatch = 400,
