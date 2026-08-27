@@ -252,6 +252,7 @@ fn migrate_legacy_to_v1(env: &Env) -> u32 {
 /// **Admin only**. Define `[start, end)` epoch seconds:
 /// - `start` = 0: no window set (upgrades blocked)
 /// - `end` = 0: no upper bound (upgrades allowed from start onwards)
+/// - Validates that start < end (when end != 0)
 pub fn set_upgrade_window(
     env: &Env,
     caller: &Address,
@@ -259,7 +260,8 @@ pub fn set_upgrade_window(
     end: u64,
 ) -> Result<(), QuickexError> {
     require_admin(env, caller)?;
-    storage::set_upgrade_window(env, start, end);
+    storage::set_upgrade_window(env, start, end)?;
+    crate::events::publish_upgrade_window_changed(env, caller, start, end);
     Ok(())
 }
 
@@ -412,6 +414,11 @@ pub fn set_oracle_fee_config(
     config: crate::types::OracleFeeConfig,
 ) -> Result<(), QuickexError> {
     require_any_role(env, caller, &[Role::Admin, Role::Operator])?;
+
+    const MAX_STALE_THRESHOLD_SECS: u64 = 3600;
+    if config.stale_threshold_secs > MAX_STALE_THRESHOLD_SECS {
+        return Err(QuickexError::InvalidAmount);
+    }
 
     storage::set_oracle_fee_config(env, &config);
     Ok(())
