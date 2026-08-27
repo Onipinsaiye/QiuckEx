@@ -16,6 +16,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { FlashList, type ListRenderItemInfo } from "@shopify/flash-list";
 import * as FileSystem from "expo-file-system";
 import * as Sharing from "expo-sharing";
+import * as Haptics from "expo-haptics";
 import { Ionicons } from "@expo/vector-icons";
 
 import TransactionItem from "../components/transaction-item";
@@ -70,6 +71,14 @@ function escapeCsvValue(value: string): string {
   }
   return value;
 }
+
+const triggerSelectionHaptic = () => {
+  void Haptics.selectionAsync();
+};
+
+const triggerSuccessHaptic = () => {
+  void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+};
 
 // ─── Loading Skeleton ────────────────────────────────────────────────────────
 
@@ -263,6 +272,7 @@ export default function TransactionsScreen() {
       .join("\n");
 
     try {
+      triggerSuccessHaptic();
       const fileName = `quickex-transactions-${new Date().toISOString().slice(0, 10)}.csv`;
       const cacheDirectory = fileSystemCompat.cacheDirectory ?? "";
       const fileUri = `${cacheDirectory}${fileName}`;
@@ -293,6 +303,7 @@ export default function TransactionsScreen() {
   }, [filteredTransactions]);
 
   const handleClearFilters = React.useCallback(() => {
+    triggerSelectionHaptic();
     setSearchQuery("");
     setAssetFilter("All");
     setStatusFilter("All");
@@ -368,7 +379,10 @@ export default function TransactionsScreen() {
               return (
                 <Pressable
                   key={option}
-                  onPress={() => setAssetFilter(option)}
+                  onPress={() => {
+                    triggerSelectionHaptic();
+                    setAssetFilter(option);
+                  }}
                   style={[
                     styles.chip,
                     {
@@ -407,7 +421,10 @@ export default function TransactionsScreen() {
             return (
               <Pressable
                 key={option}
-                onPress={() => setStatusFilter(option)}
+                onPress={() => {
+                  triggerSelectionHaptic();
+                  setStatusFilter(option);
+                }}
                 style={[
                   styles.chip,
                   { backgroundColor: theme.chipBg, borderColor: theme.border },
@@ -498,7 +515,10 @@ export default function TransactionsScreen() {
           <View />
         )}
         <Pressable
-          onPress={handleExport}
+          onPress={() => {
+            triggerSelectionHaptic();
+            void handleExport();
+          }}
           style={[
             styles.exportButton,
             { backgroundColor: theme.buttonPrimaryBg },
@@ -558,7 +578,10 @@ export default function TransactionsScreen() {
         ]}
       >
         <TouchableOpacity
-          onPress={() => router.back()}
+          onPress={() => {
+            triggerSelectionHaptic();
+            router.back();
+          }}
           style={styles.backBtn}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
         >
