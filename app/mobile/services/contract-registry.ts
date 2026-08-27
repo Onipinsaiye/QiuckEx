@@ -52,7 +52,7 @@ function isContractRegistryEnvelope(value: unknown): value is ContractRegistryEn
 export const ContractRegistryService = {
   async sync(backendUrl: string): Promise<ContractRegistrySyncResult> {
     try {
-      const response = await fetch(`${backendUrl}/api/contracts/registry`);
+      const response = await fetch(`${backendUrl}/contracts/registry`);
       if (response.status === 404) {
         throw new Error('Contract registry route not found on backend');
       }

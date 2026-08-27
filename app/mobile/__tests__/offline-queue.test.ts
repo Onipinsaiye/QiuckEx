@@ -1,5 +1,4 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import NetInfo from "@react-native-community/netinfo";
 import {
   getOfflineQueue,
   saveOfflineQueue,
@@ -9,6 +8,7 @@ import {
   updateQueueItem,
   retryQueuedAction,
   processOfflineQueue,
+  registerActionHandler,
 } from "../services/offline-queue";
 
 jest.mock("@react-native-async-storage/async-storage", () => {
@@ -27,14 +27,17 @@ jest.mock("@react-native-async-storage/async-storage", () => {
   };
 });
 
-jest.mock("@react-native-community/netinfo", () => ({
-  fetch: jest.fn(),
-}));
-
 describe("Offline Action Queue Service", () => {
+  const SUCCESS_ACTION = "test.success";
+  const FAILURE_ACTION = "test.failure";
+
   beforeEach(async () => {
     jest.clearAllMocks();
     await AsyncStorage.clear();
+    registerActionHandler(SUCCESS_ACTION, async () => undefined);
+    registerActionHandler(FAILURE_ACTION, async () => {
+      throw new Error("Test handler failure");
+    });
   });
 
   it("should start with an empty queue", async () => {
@@ -43,9 +46,9 @@ describe("Offline Action Queue Service", () => {
   });
 
   it("should enqueue a new action and mark it as pending", async () => {
-    const action = await enqueueAction("mock-success", { key: "value" });
+    const action = await enqueueAction(SUCCESS_ACTION, { key: "value" });
     expect(action.id).toBeDefined();
-    expect(action.type).toBe("mock-success");
+    expect(action.type).toBe(SUCCESS_ACTION);
     expect(action.payload).toEqual({ key: "value" });
     expect(action.status).toBe("pending");
     expect(action.attempts).toBe(0);
@@ -58,8 +61,8 @@ describe("Offline Action Queue Service", () => {
   });
 
   it("should dequeue an action by ID", async () => {
-    const action1 = await enqueueAction("mock-success", { id: 1 });
-    const action2 = await enqueueAction("mock-failure", { id: 2 });
+    const action1 = await enqueueAction(SUCCESS_ACTION, { id: 1 });
+    const action2 = await enqueueAction(FAILURE_ACTION, { id: 2 });
 
     let queue = await getOfflineQueue();
     expect(queue).toHaveLength(2);
@@ -71,8 +74,8 @@ describe("Offline Action Queue Service", () => {
   });
 
   it("should clear the entire queue", async () => {
-    await enqueueAction("mock-success", { id: 1 });
-    await enqueueAction("mock-failure", { id: 2 });
+    await enqueueAction(SUCCESS_ACTION, { id: 1 });
+    await enqueueAction(FAILURE_ACTION, { id: 2 });
 
     let queue = await getOfflineQueue();
     expect(queue).toHaveLength(2);
@@ -83,7 +86,7 @@ describe("Offline Action Queue Service", () => {
   });
 
   it("should update metadata fields on a queue item", async () => {
-    const action = await enqueueAction("mock-success", { foo: "bar" });
+    const action = await enqueueAction(SUCCESS_ACTION, { foo: "bar" });
     const updated = await updateQueueItem(action.id, {
       status: "failed",
       attempts: 3,
@@ -99,8 +102,8 @@ describe("Offline Action Queue Service", () => {
     expect(queue[0].status).toBe("failed");
   });
 
-  it("should process a mock-success action successfully", async () => {
-    const action = await enqueueAction("mock-success", { foo: "bar" });
+  it("should process a registered action successfully", async () => {
+    const action = await enqueueAction(SUCCESS_ACTION, { foo: "bar" });
     const result = await retryQueuedAction(action.id);
 
     expect(result?.status).toBe("completed");
@@ -108,35 +111,19 @@ describe("Offline Action Queue Service", () => {
     expect(result?.failureReason).toBeNull();
   });
 
-  it("should record failure reasons when a mock-failure action fails", async () => {
-    const action = await enqueueAction("mock-failure", { foo: "bar" });
+  it("should record failure reasons when a registered action fails", async () => {
+    const action = await enqueueAction(FAILURE_ACTION, { foo: "bar" });
     const result = await retryQueuedAction(action.id);
 
     expect(result?.status).toBe("failed");
     expect(result?.attempts).toBe(1);
-    expect(result?.failureReason).toBe("Simulated network timeout/offline error");
-  });
-
-  it("should evaluate network connection on mock-payment actions", async () => {
-    const action = await enqueueAction("mock-payment", { amount: "10.00" });
-
-    // Scenario A: Offline retry
-    (NetInfo.fetch as jest.Mock).mockResolvedValue({ isConnected: false });
-    const resultOffline = await retryQueuedAction(action.id);
-    expect(resultOffline?.status).toBe("failed");
-    expect(resultOffline?.failureReason).toBe("Cannot send payment: Device is offline");
-
-    // Scenario B: Online retry
-    (NetInfo.fetch as jest.Mock).mockResolvedValue({ isConnected: true });
-    const resultOnline = await retryQueuedAction(action.id);
-    expect(resultOnline?.status).toBe("completed");
-    expect(resultOnline?.failureReason).toBeNull();
+    expect(result?.failureReason).toBe("Test handler failure");
   });
 
   it("should process all pending and failed actions sequentially", async () => {
-    const act1 = await enqueueAction("mock-success", { number: 1 });
-    const act2 = await enqueueAction("mock-failure", { number: 2 });
-    const act3 = await enqueueAction("mock-success", { number: 3 });
+    const act1 = await enqueueAction(SUCCESS_ACTION, { number: 1 });
+    const act2 = await enqueueAction(FAILURE_ACTION, { number: 2 });
+    const act3 = await enqueueAction(SUCCESS_ACTION, { number: 3 });
 
     // Mark act3 as completed manually first so it's skipped
     await updateQueueItem(act3.id, { status: "completed" });
