@@ -598,6 +598,28 @@ impl QuickexContract {
         escrow::cleanup_escrow(&env, commitment)
     }
 
+    /// Batch cleanup multiple terminal escrow entries in a single call.
+    ///
+    /// Attempts to clean up each commitment in the vector. Non-terminal escrows are
+    /// skipped and do not cause the entire operation to fail. Returns the count of
+    /// successfully cleaned escrows.
+    ///
+    /// # Gas Cost
+    ///
+    /// Approximately 1,000-2,000 stroops per escrow cleaned, plus 200 stroops overhead.
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment
+    /// * `commitments` - Vector of commitment hashes to clean up
+    ///
+    /// # Returns
+    /// Number of escrows successfully cleaned up.
+    pub fn cleanup_escrow_batch(env: Env, commitments: Vec<BytesN<32>>) -> Result<u32, QuickexError> {
+        admin::require_initialized(&env)?;
+        pause_policy::require_entry_allowed(&env, EntryPoint::CleanupEscrow)?;
+        escrow::cleanup_escrow_batch(&env, commitments)
+    }
+
     /// Automatically finalize an expired escrow by refunding to the owner.
     ///
     /// This function enables deterministic timeout-based refund finalization so

@@ -176,6 +176,12 @@ pub const EVENT_SCHEMAS: &[EventSchema] = &[
         schema_version: EVENT_SCHEMA_VERSION,
     },
     EventSchema {
+        name: "EscrowCleaned",
+        topics: &[EVENT_TOPIC_ESCROW, "EscrowCleaned", "escrow_id"],
+        payload_keys: &["schema_version", "status", "timestamp"],
+        schema_version: EVENT_SCHEMA_VERSION,
+    },
+    EventSchema {
         name: "EscrowDisputed",
         topics: &[EVENT_TOPIC_ESCROW, "EscrowDisputed", "escrow_id", "arbiter"],
         payload_keys: &["schema_version", "timestamp"],
@@ -781,6 +787,31 @@ pub struct EscrowFinalizedEvent {
     pub token: Address,
     pub total_amount: i128,
     pub timestamp: u64,
+}
+
+#[contractevent(topics = ["TOPIC_ESCROW", "EscrowCleaned"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EscrowCleanedEvent {
+    #[topic]
+    pub escrow_id: BytesN<32>,
+
+    pub schema_version: u32,
+    pub status: u32,
+    pub timestamp: u64,
+}
+
+pub(crate) fn publish_escrow_cleaned(
+    env: &Env,
+    commitment: BytesN<32>,
+    status: crate::types::EscrowStatus,
+) {
+    EscrowCleanedEvent {
+        escrow_id: commitment,
+        schema_version: EVENT_SCHEMA_VERSION,
+        status: status as u32,
+        timestamp: env.ledger().timestamp(),
+    }
+    .publish(env);
 }
 
 #[contractevent(topics = ["TOPIC_ESCROW", "EscrowDisputed"])]
