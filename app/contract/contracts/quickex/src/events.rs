@@ -243,6 +243,18 @@ pub const EVENT_SCHEMAS: &[EventSchema] = &[
         schema_version: EVENT_SCHEMA_VERSION,
     },
     EventSchema {
+        name: "MilestoneCompleted",
+        topics: &[EVENT_TOPIC_ESCROW, "MilestoneCompleted", "escrow_id"],
+        payload_keys: &[
+            "milestone_id",
+            "milestone_amount",
+            "schema_version",
+            "timestamp",
+            "total_amount_paid",
+        ],
+        schema_version: EVENT_SCHEMA_VERSION,
+    },
+    EventSchema {
         name: "PerAssetFeeSet",
         topics: &[EVENT_TOPIC_ADMIN, "PerAssetFeeSet", "token"],
         payload_keys: &[
@@ -796,6 +808,19 @@ pub struct PartialPaymentEvent {
     pub timestamp: u64,
 }
 
+#[contractevent(topics = ["TOPIC_ESCROW", "MilestoneCompleted"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MilestoneCompletedEvent {
+    #[topic]
+    pub escrow_id: BytesN<32>,
+
+    pub schema_version: u32,
+    pub milestone_id: u32,
+    pub milestone_amount: i128,
+    pub total_amount_paid: i128,
+    pub timestamp: u64,
+}
+
 #[contractevent(topics = ["TOPIC_ESCROW", "EscrowFinalized"])]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EscrowFinalizedEvent {
@@ -914,6 +939,24 @@ pub(crate) fn publish_partial_payment(
         payment_amount,
         amount_paid,
         amount_due,
+        timestamp: env.ledger().timestamp(),
+    }
+    .publish(env);
+}
+
+pub(crate) fn publish_milestone_completed(
+    env: &Env,
+    commitment: BytesN<32>,
+    milestone_id: u32,
+    milestone_amount: i128,
+    total_amount_paid: i128,
+) {
+    MilestoneCompletedEvent {
+        escrow_id: commitment,
+        schema_version: EVENT_SCHEMA_VERSION,
+        milestone_id,
+        milestone_amount,
+        total_amount_paid,
         timestamp: env.ledger().timestamp(),
     }
     .publish(env);
