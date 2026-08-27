@@ -26,7 +26,7 @@ export default function PaymentConfirmationScreen() {
   const { theme } = useTheme();
   const { isConnected } = useNetworkStatus();
   const { authenticateForSensitiveAction } = useSecurity();
-  const backendUrl = process.env.EXPO_PUBLIC_API_URL || "https://api.quickex.com";
+  const backendUrl = process.env.EXPO_PUBLIC_API_URL || "https://api.quickex.to";
   const {
     isReady,
     error: registryError,
