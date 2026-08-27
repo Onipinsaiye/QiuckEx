@@ -6,7 +6,7 @@ jest.mock('../services/wallet-session', () => ({
 }));
 
 describe('fetchSessionBootstrap', () => {
-  const apiUrl = 'http://localhost:3000';
+  const apiUrl = 'http://localhost:4000';
 
   beforeEach(() => {
     jest.resetAllMocks();

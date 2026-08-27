@@ -203,9 +203,7 @@ export function SecurityProvider({ children }: { children: React.ReactNode }) {
     async (reason: SecurityAuthReason) => {
       if (!settings.biometricLockEnabled) return true;
 
-      // Unlocking the app always requires authentication. A valid session may
-      // be reused for sensitive actions, but it must not bypass the app lock.
-      if (reason !== "app_unlock" && reason !== "session_expired") {
+      if (reason !== "session_expired" && reason !== "app_unlock") {
         const sessionValid = await isBiometricSessionValid(
           settings.sessionTimeoutMinutes,
         );

@@ -203,10 +203,18 @@ pub enum DataKey {
     FeeCollectorIndex,
     /// Fee collector address at a given rotation index (Fee Router v2).
     FeeCollector(u32),
+    /// Timestamp of the last fee collector rotation for cooldown enforcement (singleton).
+    FeeCollectorLastRotation,
+    /// Rotation history entries (append-only Vec tracking all rotations).
+    FeeCollectorRotationHistory,
     /// Tracks arbiter votes for disputed escrows. Keyed by (commitment, arbiter).
     DisputeVote(Bytes, Address),
     /// Tracks whether a hook contract is on the allowlist.
     HookAllowlist(Address),
+    /// Escrow extension record tracking TTL renewals. Keyed by commitment.
+    EscrowExtension(Bytes),
+    /// Dispute evidence record. Keyed by (commitment, evidence_hash).
+    DisputeEvidence(Bytes, BytesN<32>),
 }
 
 /// Compact escrow record stored on the hot path.
@@ -377,10 +385,9 @@ pub fn is_emergency_mode(env: &Env) -> bool {
 /// Set the upgrade window: [start, end] in ledger seconds (epoch).
 /// - `start`: ledger timestamp when upgrades are allowed to begin. 0 = unset.
 /// - `end`: ledger timestamp after which upgrades are blocked. 0 = no upper bound.
-pub fn set_upgrade_window(env: &Env, start: u64, end: u64) {
+pub fn set_upgrade_window(env: &Env, start: u64, end: u64) -> Result<(), crate::errors::QuickexError> {
     if end != 0 && end <= start {
-        // Invalid window; silently ignore or could panic depending on caller behavior
-        return;
+        return Err(crate::errors::QuickexError::InvalidAmount);
     }
     env.storage()
         .persistent()
@@ -388,6 +395,7 @@ pub fn set_upgrade_window(env: &Env, start: u64, end: u64) {
     env.storage()
         .persistent()
         .set(&DataKey::UpgradeWindowEnd, &end);
+    Ok(())
 }
 
 /// Get the current upgrade window.
@@ -724,6 +732,15 @@ pub fn get_feature_pause_reason(env: &Env, flag: PauseFlag) -> u32 {
     reasons.get(flag as u32).unwrap_or(0u32)
 }
 
+/// Get the current pause status including global and per-feature pauses.
+pub fn get_pause_status(env: &Env) -> crate::types::PauseStatus {
+    crate::types::PauseStatus {
+        is_globally_paused: is_paused(env),
+        global_pause_reason: get_global_pause_reason(env),
+        feature_pause_flags: get_pause_flags(env),
+    }
+}
+
 /// Get paused state.
 #[allow(dead_code)]
 pub fn is_paused(env: &Env) -> bool {
@@ -952,6 +969,50 @@ pub fn set_fee_collector_at(env: &Env, index: u32, collector: &Address) {
         .set(&DataKey::FeeCollector(index), collector);
 }
 
+/// Get the timestamp of the last fee collector rotation (for cooldown enforcement).
+pub fn get_fee_collector_last_rotation(env: &Env) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::FeeCollectorLastRotation)
+        .unwrap_or(0u64)
+}
+
+/// Set the timestamp of the last fee collector rotation.
+pub fn set_fee_collector_last_rotation(env: &Env, timestamp: u64) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::FeeCollectorLastRotation, &timestamp);
+}
+
+/// Get the rotation history (all rotations that have occurred).
+pub fn get_fee_collector_rotation_history(
+    env: &Env,
+) -> Vec<crate::types::FeeCollectorRotationEntry> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::FeeCollectorRotationHistory)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Add a rotation entry to the history.
+pub fn add_fee_collector_rotation_entry(
+    env: &Env,
+    entry: &crate::types::FeeCollectorRotationEntry,
+) {
+    let mut history = get_fee_collector_rotation_history(env);
+    history.push_back(entry.clone());
+    env.storage()
+        .persistent()
+        .set(&DataKey::FeeCollectorRotationHistory, &history);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Cooldown enforcement constant
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Minimum seconds between fee collector rotations (24 hours).
+pub const FEE_COLLECTOR_ROTATION_COOLDOWN_SECS: u64 = 86400;
+
 // -----------------------------------------------------------------------------
 // Escrow-id map helpers (Issue #304)
 // -----------------------------------------------------------------------------
@@ -1008,4 +1069,52 @@ pub fn count_dispute_votes(env: &Env, commitment: &Bytes, arbiters: &Vec<Address
         }
     }
     count
+}
+
+// ---- Escrow extension helpers (Issue #113) ----
+
+/// Get an escrow's extension record if it exists.
+pub fn get_escrow_extension(env: &Env, commitment: &Bytes) -> Option<crate::types::EscrowExtension> {
+    let key = DataKey::EscrowExtension(commitment.clone());
+    env.storage().persistent().get(&key)
+}
+
+/// Store or update an escrow's extension record.
+pub fn put_escrow_extension(
+    env: &Env,
+    commitment: &Bytes,
+    extension: &crate::types::EscrowExtension,
+) {
+    let key = DataKey::EscrowExtension(commitment.clone());
+    env.storage().persistent().set(&key, extension);
+    set_or_extend_ttl(env, &key, RecordType::EscrowDispute);
+}
+
+// ---- Dispute evidence helpers (Issue #115) ----
+
+/// Get dispute evidence for a given commitment and evidence hash.
+pub fn get_dispute_evidence(
+    env: &Env,
+    commitment: &Bytes,
+    evidence_hash: &BytesN<32>,
+) -> Option<crate::types::DisputeEvidence> {
+    let key = DataKey::DisputeEvidence(commitment.clone(), evidence_hash.clone());
+    env.storage().persistent().get(&key)
+}
+
+/// Store dispute evidence.
+pub fn put_dispute_evidence(
+    env: &Env,
+    commitment: &Bytes,
+    evidence: &crate::types::DisputeEvidence,
+) {
+    let key = DataKey::DisputeEvidence(commitment.clone(), evidence.evidence_hash.clone());
+    env.storage().persistent().set(&key, evidence);
+    set_or_extend_ttl(env, &key, RecordType::EscrowDispute);
+}
+
+/// Check if evidence exists for an escrow.
+pub fn has_dispute_evidence(env: &Env, commitment: &Bytes, evidence_hash: &BytesN<32>) -> bool {
+    let key = DataKey::DisputeEvidence(commitment.clone(), evidence_hash.clone());
+    env.storage().persistent().has(&key)
 }

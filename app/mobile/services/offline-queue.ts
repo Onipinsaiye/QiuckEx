@@ -1,5 +1,4 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import NetInfo from "@react-native-community/netinfo";
 
 export interface QueuedAction {
   id: string;
@@ -117,26 +116,6 @@ export async function executeAction(action: QueuedAction): Promise<void> {
   const handler = handlers[action.type];
   if (handler) {
     await handler(action.payload);
-    return;
-  }
-
-  // Built-in mock handlers for development debugging
-  if (action.type === "mock-success") {
-    await new Promise((resolve) => setTimeout(resolve, 800));
-    return;
-  }
-
-  if (action.type === "mock-failure") {
-    await new Promise((resolve) => setTimeout(resolve, 800));
-    throw new Error("Simulated network timeout/offline error");
-  }
-
-  if (action.type === "mock-payment") {
-    const net = await NetInfo.fetch();
-    if (!net.isConnected) {
-      throw new Error("Cannot send payment: Device is offline");
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1000));
     return;
   }
 
