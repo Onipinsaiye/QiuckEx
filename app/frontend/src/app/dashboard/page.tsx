@@ -18,6 +18,10 @@ import {
   fetchActivityFeed,
   type ActivityFeedItem,
 } from "@/hooks/activityFeedApi";
+import {
+  filterActivityItems,
+  type ActivityFilterState,
+} from "@/lib/activityFilters";
 
 type DashboardResponse = {
   items: ActivityFeedItem[];
@@ -67,6 +71,11 @@ function DashboardContent() {
   const [metricsData, setMetricsData] = useState<AnalyticsData | null>(null);
   const [metricsLoading, setMetricsLoading] = useState(true);
   const [metricsError, setMetricsError] = useState<string | null>(null);
+  const [activityFilters, setActivityFilters] = useState<ActivityFilterState>({
+    query: "",
+    status: "All",
+    asset: "All",
+  });
 
   const loadMetrics = useCallback(async () => {
     setMetricsLoading(true);
@@ -171,6 +180,28 @@ function DashboardContent() {
 
     return null;
   }, [highlightedBid, highlightedListing, highlightedTransaction]);
+
+  const assetOptions = useMemo(
+    () => [
+      "All",
+      ...Array.from(new Set((data?.items ?? []).map((item) => item.asset))).sort(),
+    ],
+    [data?.items],
+  );
+
+  const filteredActivityItems = useMemo(
+    () => filterActivityItems(data?.items ?? [], activityFilters),
+    [activityFilters, data?.items],
+  );
+
+  const hasActivityFilters =
+    activityFilters.query.trim().length > 0 ||
+    activityFilters.status !== "All" ||
+    activityFilters.asset !== "All";
+
+  const clearActivityFilters = () => {
+    setActivityFilters({ query: "", status: "All", asset: "All" });
+  };
 
   const handleRetry = () => {
     setFeedRetryCount((prev) => prev + 1);
@@ -474,104 +505,224 @@ function DashboardContent() {
             </div>
           ) : (
             <>
-              <div className="overflow-x-auto">
-                <table className="min-w-[700px] w-full text-left">
-                  <caption className="sr-only">
-                    Recent payment activity from the Stellar network.
-                  </caption>
-                  <thead>
-                    <tr className="border-b border-border text-[10px] font-semibold uppercase tracking-[0.24em] text-muted">
-                      <th className="px-6 py-4 sm:px-10 sm:py-6">Transaction</th>
-                      <th className="px-6 py-4 sm:px-10 sm:py-6">Amount</th>
-                      <th className="px-6 py-4 sm:px-10 sm:py-6">Memo / Status</th>
-                      <th className="px-6 py-4 sm:px-10 sm:py-6">From / To</th>
-                      <th className="px-6 py-4 sm:px-10 sm:py-6">Date</th>
-                    </tr>
-                  </thead>
+              <div className="border-b border-border bg-surface/60 p-6 sm:p-8">
+                <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+                  <div className="relative w-full max-w-xl">
+                    <svg
+                      className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      aria-hidden="true"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="m21 21-4.35-4.35m1.85-5.15a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z"
+                      />
+                    </svg>
+                    <input
+                      type="search"
+                      value={activityFilters.query}
+                      onChange={(event) =>
+                        setActivityFilters((current) => ({
+                          ...current,
+                          query: event.target.value,
+                        }))
+                      }
+                      placeholder="Search memo, hash, address or asset"
+                      aria-label="Search transaction activity"
+                      className="w-full rounded-2xl border border-border bg-card py-3 pl-11 pr-4 text-sm text-foreground placeholder:text-muted focus:border-indigo-300 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                    />
+                  </div>
 
-                  <tbody className="divide-y divide-border">
-                    {(data?.items ?? []).map((item, index) => {
-                      const isHighlighted =
-                        item.id === highlightedTransaction;
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                    <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.24em] text-muted">
+                      <span>Status</span>
+                      <select
+                        value={activityFilters.status}
+                        onChange={(event) =>
+                          setActivityFilters((current) => ({
+                            ...current,
+                            status: event.target.value as ActivityFilterState["status"],
+                          }))
+                        }
+                        className="rounded-xl border border-border bg-card px-3 py-2 text-sm text-foreground focus:border-indigo-300 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                      >
+                        <option value="All">All</option>
+                        <option value="Settled">Settled</option>
+                        <option value="Pending">Pending</option>
+                      </select>
+                    </label>
 
-                      return (
-                        <tr
-                          key={item.id}
-                          id={toAnchorId("transaction", item.id)}
-                          tabIndex={-1}
-                          className={`transition ${
-                            isHighlighted
-                              ? "bg-indigo-500/10"
-                              : "hover:bg-surface"
-                          }`}
-                        >
-                          <td className="px-6 py-6 sm:px-10">
-                            <div className="flex items-center gap-3">
-                              <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-surface font-mono text-[10px] opacity-70">
-                                #{index + 1}
-                              </span>
-                              <span className="font-mono text-sm text-foreground sm:text-base">
-                                {shortAddress(item.id)}
-                              </span>
-                            </div>
-                          </td>
-                          <td className="px-6 py-6 text-lg font-semibold sm:px-10">
-                            {item.amount} {item.asset}
-                          </td>
-                          <td className="px-6 py-6 sm:px-10">
-                            <div className="flex flex-col gap-1.5">
-                              {item.memo ? (
-                                <span className="font-semibold text-foreground">
-                                  {item.memo}
-                                </span>
-                              ) : (
-                                <span className="text-xs italic text-subtle">
-                                  No memo
-                                </span>
-                              )}
-                              <span
-                                className={`inline-flex w-fit items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.24em] ${getStatusClasses(
-                                  item.status,
-                                )}`}
-                              >
-                                {item.status}
-                              </span>
-                            </div>
-                          </td>
-                          <td className="px-6 py-6 sm:px-10">
-                            <div className="flex flex-col gap-1">
-                              <span className="text-xs text-muted">
-                                From:{" "}
-                                <span className="font-mono text-subtle">
-                                  {shortAddress(item.source)}
-                                </span>
-                              </span>
-                              <span className="text-xs text-muted">
-                                To:{" "}
-                                <span className="font-mono text-subtle">
-                                  {shortAddress(item.destination)}
-                                </span>
-                              </span>
-                            </div>
-                          </td>
-                          <td className="px-6 py-6 text-muted sm:px-10">
-                            {item.date}
-                          </td>
+                    <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.24em] text-muted">
+                      <span>Asset</span>
+                      <select
+                        value={activityFilters.asset}
+                        onChange={(event) =>
+                          setActivityFilters((current) => ({
+                            ...current,
+                            asset: event.target.value,
+                          }))
+                        }
+                        className="rounded-xl border border-border bg-card px-3 py-2 text-sm text-foreground focus:border-indigo-300 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                      >
+                        {assetOptions.map((asset) => (
+                          <option key={asset} value={asset}>
+                            {asset}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    {hasActivityFilters ? (
+                      <button
+                        type="button"
+                        onClick={clearActivityFilters}
+                        className="rounded-xl border border-border bg-surface px-3 py-2 text-sm font-semibold text-muted transition hover:text-foreground"
+                      >
+                        Reset
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+
+              {filteredActivityItems.length === 0 ? (
+                <div className="flex flex-col items-center justify-center px-6 py-16 text-center sm:px-10">
+                  <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-surface">
+                    <svg
+                      className="h-8 w-8 text-muted"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={1.5}
+                      aria-hidden="true"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M21 21 16.65 16.65M11 7a4 4 0 1 1 0 8a4 4 0 0 1 0-8Z"
+                      />
+                    </svg>
+                  </div>
+                  <h3 className="text-lg font-semibold text-foreground">
+                    No transactions match these filters
+                  </h3>
+                  <p className="mt-2 max-w-md text-sm text-muted">
+                    Try a different keyword, status, or asset to find the payment you need.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={clearActivityFilters}
+                    className={`mt-6 rounded-xl bg-indigo-500 px-5 py-2.5 text-sm font-semibold text-white shadow-lg transition hover:bg-indigo-400 ${FOCUS_RING_CLASS}`}
+                  >
+                    Clear filters
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-[700px] w-full text-left">
+                      <caption className="sr-only">
+                        Recent payment activity from the Stellar network.
+                      </caption>
+                      <thead>
+                        <tr className="border-b border-border text-[10px] font-semibold uppercase tracking-[0.24em] text-muted">
+                          <th className="px-6 py-4 sm:px-10 sm:py-6">Transaction</th>
+                          <th className="px-6 py-4 sm:px-10 sm:py-6">Amount</th>
+                          <th className="px-6 py-4 sm:px-10 sm:py-6">Memo / Status</th>
+                          <th className="px-6 py-4 sm:px-10 sm:py-6">From / To</th>
+                          <th className="px-6 py-4 sm:px-10 sm:py-6">Date</th>
                         </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+                      </thead>
 
-              <div className="bg-surface p-6 text-center sm:p-8">
-                <Link
-                  href="/notifications?category=payments"
-                  className={`text-sm font-semibold text-muted transition hover:text-foreground ${FOCUS_RING_CLASS}`}
-                >
-                  View payment alerts
-                </Link>
-              </div>
+                      <tbody className="divide-y divide-border">
+                        {filteredActivityItems.map((item, index) => {
+                          const isHighlighted =
+                            item.id === highlightedTransaction;
+
+                          return (
+                            <tr
+                              key={item.id}
+                              id={toAnchorId("transaction", item.id)}
+                              tabIndex={-1}
+                              className={`transition ${
+                                isHighlighted
+                                  ? "bg-indigo-500/10"
+                                  : "hover:bg-surface"
+                              }`}
+                            >
+                              <td className="px-6 py-6 sm:px-10">
+                                <div className="flex items-center gap-3">
+                                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-surface font-mono text-[10px] opacity-70">
+                                    #{index + 1}
+                                  </span>
+                                  <span className="font-mono text-sm text-foreground sm:text-base">
+                                    {shortAddress(item.id)}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="px-6 py-6 text-lg font-semibold sm:px-10">
+                                {item.amount} {item.asset}
+                              </td>
+                              <td className="px-6 py-6 sm:px-10">
+                                <div className="flex flex-col gap-1.5">
+                                  {item.memo ? (
+                                    <span className="font-semibold text-foreground">
+                                      {item.memo}
+                                    </span>
+                                  ) : (
+                                    <span className="text-xs italic text-subtle">
+                                      No memo
+                                    </span>
+                                  )}
+                                  <span
+                                    className={`inline-flex w-fit items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.24em] ${getStatusClasses(
+                                      item.status,
+                                    )}`}
+                                  >
+                                    {item.status}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="px-6 py-6 sm:px-10">
+                                <div className="flex flex-col gap-1">
+                                  <span className="text-xs text-muted">
+                                    From:{" "}
+                                    <span className="font-mono text-subtle">
+                                      {shortAddress(item.source)}
+                                    </span>
+                                  </span>
+                                  <span className="text-xs text-muted">
+                                    To:{" "}
+                                    <span className="font-mono text-subtle">
+                                      {shortAddress(item.destination)}
+                                    </span>
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="px-6 py-6 text-muted sm:px-10">
+                                {item.date}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="bg-surface p-6 text-center sm:p-8">
+                    <Link
+                      href="/notifications?category=payments"
+                      className={`text-sm font-semibold text-muted transition hover:text-foreground ${FOCUS_RING_CLASS}`}
+                    >
+                      View payment alerts
+                    </Link>
+                  </div>
+                </>
+              )}
             </>
           )}
         </section>

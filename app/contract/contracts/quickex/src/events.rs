@@ -176,6 +176,12 @@ pub const EVENT_SCHEMAS: &[EventSchema] = &[
         schema_version: EVENT_SCHEMA_VERSION,
     },
     EventSchema {
+        name: "EscrowCleaned",
+        topics: &[EVENT_TOPIC_ESCROW, "EscrowCleaned", "escrow_id"],
+        payload_keys: &["schema_version", "status", "timestamp"],
+        schema_version: EVENT_SCHEMA_VERSION,
+    },
+    EventSchema {
         name: "EscrowDisputed",
         topics: &[EVENT_TOPIC_ESCROW, "EscrowDisputed", "escrow_id", "arbiter"],
         payload_keys: &["schema_version", "timestamp"],
@@ -237,6 +243,18 @@ pub const EVENT_SCHEMAS: &[EventSchema] = &[
         schema_version: EVENT_SCHEMA_VERSION,
     },
     EventSchema {
+        name: "MilestoneCompleted",
+        topics: &[EVENT_TOPIC_ESCROW, "MilestoneCompleted", "escrow_id"],
+        payload_keys: &[
+            "milestone_id",
+            "milestone_amount",
+            "schema_version",
+            "timestamp",
+            "total_amount_paid",
+        ],
+        schema_version: EVENT_SCHEMA_VERSION,
+    },
+    EventSchema {
         name: "PerAssetFeeSet",
         topics: &[EVENT_TOPIC_ADMIN, "PerAssetFeeSet", "token"],
         payload_keys: &[
@@ -285,9 +303,25 @@ pub const EVENT_SCHEMAS: &[EventSchema] = &[
         schema_version: EVENT_SCHEMA_VERSION,
     },
     EventSchema {
-        name: "UpgradeWindowChanged",
-        topics: &[EVENT_TOPIC_ADMIN, "UpgradeWindowChanged", "admin"],
-        payload_keys: &["window_start", "window_end", "schema_version", "timestamp"],
+        name: "EscrowExtensionApplied",
+        topics: &[EVENT_TOPIC_ESCROW, "EscrowExtensionApplied", "escrow_id"],
+        payload_keys: &[
+            "extension_count",
+            "new_expires_at",
+            "schema_version",
+            "timestamp",
+        ],
+        schema_version: EVENT_SCHEMA_VERSION,
+    },
+    EventSchema {
+        name: "DisputeEvidenceSubmitted",
+        topics: &[EVENT_TOPIC_DISPUTE, "DisputeEvidenceSubmitted", "escrow_id"],
+        payload_keys: &[
+            "evidence_hash",
+            "submitted_by",
+            "schema_version",
+            "timestamp",
+        ],
         schema_version: EVENT_SCHEMA_VERSION,
     },
 ];
@@ -774,6 +808,19 @@ pub struct PartialPaymentEvent {
     pub timestamp: u64,
 }
 
+#[contractevent(topics = ["TOPIC_ESCROW", "MilestoneCompleted"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MilestoneCompletedEvent {
+    #[topic]
+    pub escrow_id: BytesN<32>,
+
+    pub schema_version: u32,
+    pub milestone_id: u32,
+    pub milestone_amount: i128,
+    pub total_amount_paid: i128,
+    pub timestamp: u64,
+}
+
 #[contractevent(topics = ["TOPIC_ESCROW", "EscrowFinalized"])]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EscrowFinalizedEvent {
@@ -787,6 +834,31 @@ pub struct EscrowFinalizedEvent {
     pub token: Address,
     pub total_amount: i128,
     pub timestamp: u64,
+}
+
+#[contractevent(topics = ["TOPIC_ESCROW", "EscrowCleaned"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EscrowCleanedEvent {
+    #[topic]
+    pub escrow_id: BytesN<32>,
+
+    pub schema_version: u32,
+    pub status: u32,
+    pub timestamp: u64,
+}
+
+pub(crate) fn publish_escrow_cleaned(
+    env: &Env,
+    commitment: BytesN<32>,
+    status: crate::types::EscrowStatus,
+) {
+    EscrowCleanedEvent {
+        escrow_id: commitment,
+        schema_version: EVENT_SCHEMA_VERSION,
+        status: status as u32,
+        timestamp: env.ledger().timestamp(),
+    }
+    .publish(env);
 }
 
 #[contractevent(topics = ["TOPIC_ESCROW", "EscrowDisputed"])]
@@ -867,6 +939,24 @@ pub(crate) fn publish_partial_payment(
         payment_amount,
         amount_paid,
         amount_due,
+        timestamp: env.ledger().timestamp(),
+    }
+    .publish(env);
+}
+
+pub(crate) fn publish_milestone_completed(
+    env: &Env,
+    commitment: BytesN<32>,
+    milestone_id: u32,
+    milestone_amount: i128,
+    total_amount_paid: i128,
+) {
+    MilestoneCompletedEvent {
+        escrow_id: commitment,
+        schema_version: EVENT_SCHEMA_VERSION,
+        milestone_id,
+        milestone_amount,
+        total_amount_paid,
         timestamp: env.ledger().timestamp(),
     }
     .publish(env);
@@ -1182,29 +1272,61 @@ pub(crate) fn publish_hook_allowlist_changed(env: &Env, hook_contract: Address, 
     .publish(env);
 }
 
-#[contractevent(topics = ["TOPIC_ADMIN", "UpgradeWindowChanged"])]
+// ---- Escrow extension events (Issue #113) ----
+
+#[contractevent(topics = ["TOPIC_ESCROW", "EscrowExtensionApplied"])]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UpgradeWindowChangedEvent {
+pub struct EscrowExtensionAppliedEvent {
     #[topic]
-    pub admin: Address,
+    pub escrow_id: BytesN<32>,
 
     pub schema_version: u32,
-    pub window_start: u64,
-    pub window_end: u64,
+    pub extension_count: u32,
+    pub new_expires_at: u64,
     pub timestamp: u64,
 }
 
-pub(crate) fn publish_upgrade_window_changed(
+pub(crate) fn publish_escrow_extension_applied(
     env: &Env,
-    admin: &Address,
-    window_start: u64,
-    window_end: u64,
+    commitment: BytesN<32>,
+    extension_count: u32,
+    new_expires_at: u64,
 ) {
-    UpgradeWindowChangedEvent {
-        admin: admin.clone(),
+    EscrowExtensionAppliedEvent {
+        escrow_id: commitment,
         schema_version: EVENT_SCHEMA_VERSION,
-        window_start,
-        window_end,
+        extension_count,
+        new_expires_at,
+        timestamp: env.ledger().timestamp(),
+    }
+    .publish(env);
+}
+
+// ---- Dispute evidence events (Issue #115) ----
+
+#[contractevent(topics = ["TOPIC_DISPUTE", "DisputeEvidenceSubmitted"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeEvidenceSubmittedEvent {
+    #[topic]
+    pub escrow_id: BytesN<32>,
+
+    pub schema_version: u32,
+    pub evidence_hash: BytesN<32>,
+    pub submitted_by: Address,
+    pub timestamp: u64,
+}
+
+pub(crate) fn publish_dispute_evidence_submitted(
+    env: &Env,
+    commitment: BytesN<32>,
+    evidence_hash: BytesN<32>,
+    submitted_by: Address,
+) {
+    DisputeEvidenceSubmittedEvent {
+        escrow_id: commitment,
+        schema_version: EVENT_SCHEMA_VERSION,
+        evidence_hash,
+        submitted_by,
         timestamp: env.ledger().timestamp(),
     }
     .publish(env);

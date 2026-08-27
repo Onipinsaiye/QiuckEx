@@ -9,6 +9,7 @@ import {
   StatusBar,
   Share,
   Clipboard,
+  Linking,
   ToastAndroid,
   Platform,
   LayoutAnimation,
@@ -966,7 +967,9 @@ export function ReceiptScreen({ receipt, onBack }: { receipt: ReceiptData; onBac
 
   const handleViewExplorer = () => {
     const url = getExplorerUrl(receipt);
-    // Open URL via Linking or pass to parent
+    void Linking.openURL(url).catch(() => {
+      // The share action remains available if no browser can handle the URL.
+    });
   };
 
   const styles = themedStyles({ color, tokens, isDark });
@@ -1076,7 +1079,7 @@ export function ReceiptScreen({ receipt, onBack }: { receipt: ReceiptData; onBac
             ]}
           >
             <QRCode
-              value={`quickex.to/receipt/${receipt.id}`}
+              value={`https://quickex.to/transaction/${receipt.id}`}
               size={160}
               color={color(tokens.textPrimary)}
               backgroundColor={color(tokens.surface)}

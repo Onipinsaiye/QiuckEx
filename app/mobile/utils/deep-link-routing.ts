@@ -24,12 +24,13 @@ export function parseTransactionDeepLink(
         .replace(/^\/+/, '')
         .split('/')
         .filter(Boolean);
-      if (segments.length >= 2 && segments[0] === 'transaction') {
+      const isTransactionPath = url.hostname === 'transaction';
+      if (isTransactionPath && segments.length >= 1) {
         const params: Record<string, string> = {};
         url.searchParams.forEach((value, key) => {
           params[key] = value;
         });
-        return { id: segments[1], params };
+        return { id: segments[0], params };
       }
     }
 
@@ -73,8 +74,11 @@ function looksLikePaymentLink(raw: string): boolean {
     const url = new URL(raw);
 
     if (url.protocol === `${QUICKEX_SCHEME}:`) {
+      if (url.hostname === 'transaction') {
+        return false;
+      }
       const segments = url.pathname.replace(/^\/+/, '').split('/').filter(Boolean);
-      return segments.length === 0 || segments[0] !== 'transaction';
+      return segments.length === 0 || url.hostname !== 'transaction';
     }
 
     if ((url.protocol === 'https:' || url.protocol === 'http:') && QUICKEX_HOSTS.includes(url.hostname)) {

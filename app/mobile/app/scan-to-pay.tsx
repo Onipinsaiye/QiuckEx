@@ -1,6 +1,6 @@
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useRouter } from 'expo-router';
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -25,54 +25,59 @@ export default function ScanToPayScreen() {
 
   const [flashEnabled, setFlashEnabled] = useState(false);
   const [scanned, setScanned] = useState(false);
+  const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
+    };
+  }, []);
 
   const handleBarCodeScanned = useCallback(
-  async ({ data }: { data: string }) => {
-    if (processingRef.current || scanned) return;
+    async ({ data }: { data: string }) => {
+      if (processingRef.current || scanned) return;
 
-    processingRef.current = true;
-    setScanned(true);
+      processingRef.current = true;
+      setScanned(true);
 
-    const start = Date.now();
+      const result = parsePaymentLink(data);
 
-    const result = parsePaymentLink(data);
+      if (result.valid) {
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
-    if (result.valid) {
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        const { username, amount, asset, memo, privacy } = result.data;
+        router.replace({
+          pathname: '/payment-confirmation',
+          params: {
+            username,
+            amount,
+            asset,
+            ...(memo ? { memo } : {}),
+            privacy: String(privacy),
+          },
+        });
+        return;
+      }
 
-      const { username, amount, asset, memo, privacy } = result.data;
-
-      router.replace({
-        pathname: '/payment-confirmation',
-        params: {
-          username,
-          amount,
-          asset,
-          ...(memo ? { memo } : {}),
-          privacy: String(privacy),
-        },
-      });
-
-      // performance check
-      const duration = Date.now() - start;
-      console.log('Scan → confirm (ms):', duration);
-    } else {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-
       setError(result.error || 'Invalid QR code');
-
-      setTimeout(() => {
+      resetTimerRef.current = setTimeout(() => {
         processingRef.current = false;
         setScanned(false);
+        resetTimerRef.current = null;
       }, 1500);
-    }
-  },
-  [router, scanned],
-);
+    },
+    [router, scanned],
+  );
 
   const dismissError = useCallback(() => {
     setError(null);
     processingRef.current = false;
+    if (resetTimerRef.current) {
+      clearTimeout(resetTimerRef.current);
+      resetTimerRef.current = null;
+    }
+    setScanned(false);
   }, []);
 
   if (!permission) {
@@ -103,14 +108,14 @@ export default function ScanToPayScreen() {
   return (
     <View style={styles.container}>
       <CameraView
-  style={StyleSheet.absoluteFillObject}
-  facing="back"
-  enableTorch={flashEnabled}
-  onBarcodeScanned={handleBarCodeScanned}
-  barcodeScannerSettings={{
-    barcodeTypes: ['qr'],
-  }}
-/>
+        style={StyleSheet.absoluteFillObject}
+        facing="back"
+        enableTorch={flashEnabled}
+        onBarcodeScanned={handleBarCodeScanned}
+        barcodeScannerSettings={{
+          barcodeTypes: ['qr'],
+        }}
+      />
 
       {/* Overlay — intentionally uses white-on-transparent for camera readability */}
       <SafeAreaView style={styles.overlay} pointerEvents="box-none">
@@ -128,17 +133,19 @@ export default function ScanToPayScreen() {
         </View>
 
         <View style={styles.controls}>
-  <Pressable
-    onPress={() => setFlashEnabled((prev) => !prev)}
-    style={styles.controlButton}
-  >
-    <Ionicons
-      name={flashEnabled ? 'flash' : 'flash-off'}
-      size={24}
-      color="white"
-    />
-  </Pressable>
-</View>
+          <Pressable
+            onPress={() => setFlashEnabled((prev) => !prev)}
+            style={styles.controlButton}
+            accessibilityRole="button"
+            accessibilityLabel={flashEnabled ? 'Turn flash off' : 'Turn flash on'}
+          >
+            <Ionicons
+              name={flashEnabled ? 'flash' : 'flash-off'}
+              size={24}
+              color="white"
+            />
+          </Pressable>
+        </View>
 
         {/* Error banner */}
         {error && (
