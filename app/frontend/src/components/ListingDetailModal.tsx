@@ -10,7 +10,7 @@ import {
   MarketplaceListingDetail,
   acceptBid,
 } from "@/hooks/marketplaceApi";
-import { resolvePublicKey } from "@/lib/publicKey";
+import { useFocusTrap } from "@/hooks/useFocusTrap";
 
 type ListingDetailModalProps = {
   listingId: string | null;
@@ -47,8 +47,7 @@ export function ListingDetailModal({
   onPlaceBid,
 }: ListingDetailModalProps) {
   const [loadState, setLoadState] = useState<DetailLoadState>({ kind: "idle" });
-  const [actionState, setActionState] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const modalRef = useFocusTrap<HTMLDivElement>(Boolean(listingId), onClose);
 
   useEffect(() => {
     if (!listingId) {
@@ -113,7 +112,7 @@ export function ListingDetailModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-background/75 backdrop-blur-md" onClick={onClose} />
 
-      <div className="relative z-10 w-full max-w-4xl overflow-hidden rounded-[32px] border border-border-strong bg-background/90 shadow-2xl">
+      <div ref={modalRef} role="dialog" aria-modal="true" aria-labelledby="listing-detail-title" className="relative z-10 w-full max-w-4xl overflow-hidden rounded-[32px] border border-border-strong bg-background/90 shadow-2xl">
         {loadState.kind === "loading" && (
           <div className="p-10 text-center">
             <p className="text-sm font-semibold text-subtle">Loading listing detail…</p>
@@ -160,7 +159,7 @@ export function ListingDetailModal({
                   <p className="text-xs font-black uppercase tracking-[0.3em] text-brand">
                     Listing Detail
                   </p>
-                  <h2 className="mt-3 text-4xl font-black text-foreground">
+                  <h2 id="listing-detail-title" className="mt-3 text-4xl font-black text-foreground">
                     @{loadState.detail.listing.username}
                   </h2>
                   <p className="mt-3 max-w-xl text-sm leading-6 text-subtle">

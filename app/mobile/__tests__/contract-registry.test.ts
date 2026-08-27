@@ -25,6 +25,9 @@ describe('ContractRegistryService', () => {
     ) as jest.Mock;
 
     const result = await ContractRegistryService.sync('http://localhost');
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://localhost/contracts/registry',
+    );
     expect(result.registry.quickex.id).toBe('C123');
     expect(result.source).toBe('network');
     expect(result.isStale).toBe(false);

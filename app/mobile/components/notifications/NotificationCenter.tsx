@@ -3,22 +3,29 @@ import {
   FlatList,
   Modal,
   Pressable,
+  RefreshControl,
   StyleSheet,
   Text,
   View,
 } from "react-native";
 import { useTranslation } from 'react-i18next';
 import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
 
 import { useTheme } from "../../src/theme/ThemeContext";
 import { useNotifications } from "./NotificationContext";
+import type { PaymentNotification } from "./types/notification";
+
+type NotificationFilter = "all" | "unread" | "incoming" | "outgoing";
 
 export const NotificationCenter: React.FC = () => {
   const { t } = useTranslation();
-  const { notifications, unreadCount, markAllRead, markRead } =
+  const { notifications, unreadCount, markAllRead, markRead, syncNow, isSyncing } =
     useNotifications();
   const { theme } = useTheme();
+  const router = useRouter();
   const [open, setOpen] = React.useState(false);
+  const [filter, setFilter] = React.useState<NotificationFilter>("all");
 
   const openCenter = React.useCallback(() => {
     setOpen(true);
@@ -27,6 +34,25 @@ export const NotificationCenter: React.FC = () => {
   const handleMarkAllRead = React.useCallback(() => {
     void markAllRead();
   }, [markAllRead]);
+
+  const filteredNotifications = React.useMemo(
+    () => notifications.filter((item) => {
+      if (filter === "unread") return !item.read;
+      if (filter === "incoming") return item.direction !== "outgoing";
+      if (filter === "outgoing") return item.direction === "outgoing";
+      return true;
+    }),
+    [filter, notifications],
+  );
+
+  const handleNotificationPress = React.useCallback((item: PaymentNotification) => {
+    if (!item.read) void markRead(item.id);
+    const transactionId = item.pagingToken ?? item.txHash;
+    if (transactionId) {
+      setOpen(false);
+      router.push({ pathname: "/transaction/[id]", params: { id: transactionId } });
+    }
+  }, [markRead, router]);
 
   return (
     <>
@@ -78,30 +104,29 @@ export const NotificationCenter: React.FC = () => {
           )}
         </View>
         <View
-          style={[
-            styles.modalHeader,
-            { borderColor: theme.border, backgroundColor: theme.background },
-          ]}
+          style={[styles.filters, { backgroundColor: theme.background }]}
         >
-          <Pressable onPress={() => setOpen(false)}>
-            <Text style={[styles.close, { color: theme.link }]}>
-              {t("close")}
-            </Text>
-          </Pressable>
+          {(["all", "unread", "incoming", "outgoing"] as NotificationFilter[]).map((value) => (
+            <Pressable
+              key={value}
+              onPress={() => setFilter(value)}
+              style={[styles.filter, { borderColor: theme.border }, filter === value && { backgroundColor: theme.primary }]}
+            >
+              <Text style={{ color: filter === value ? theme.buttonPrimaryText : theme.textSecondary }}>
+                {value[0].toUpperCase() + value.slice(1)}
+              </Text>
+            </Pressable>
+          ))}
         </View>
-
         <FlatList
-          data={notifications}
+          data={filteredNotifications}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.list}
           style={{ backgroundColor: theme.background }}
+          refreshControl={<RefreshControl refreshing={isSyncing} onRefresh={() => void syncNow()} />}
           renderItem={({ item }) => (
             <Pressable
-              onPress={() => {
-                if (!item.read) {
-                  void markRead(item.id);
-                }
-              }}
+              onPress={() => handleNotificationPress(item)}
               style={[
                 styles.item,
                 { borderColor: theme.borderLight },
@@ -131,12 +156,7 @@ export const NotificationCenter: React.FC = () => {
               <Text
                 style={[styles.emptyText, { color: theme.textSecondary }]}
               >
-                No notifications
-              </Text>
-              <Text
-                style={[styles.emptyText, { color: theme.textSecondary }]}
-              >
-                {t("noNotifications")}
+                {filter === "all" ? t("noNotifications") : `No ${filter} notifications`}
               </Text>
             </View>
           )}
@@ -174,6 +194,18 @@ const styles = StyleSheet.create({
   },
   modalTitle: { fontSize: 18, fontWeight: "700" },
   close: {},
+  filters: {
+    flexDirection: "row",
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  filter: {
+    borderWidth: 1,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
   list: { padding: 16 },
   item: {
     paddingVertical: 12,

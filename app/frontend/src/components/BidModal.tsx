@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { MarketplaceListing, formatCountdown, placeBid } from "@/hooks/marketplaceApi";
-import { resolvePublicKey } from "@/lib/publicKey";
+import { useFocusTrap } from "@/hooks/useFocusTrap";
 import { SigningSummary } from "./SigningSummary";
 
 type BidModalProps = {
@@ -18,6 +18,10 @@ export function BidModal({ listing, onClose, onBidSuccess }: BidModalProps) {
   const [bidState, setBidState] = useState<BidState>("idle");
   const [errorMsg, setErrorMsg] = useState("");
   const [showPreview, setShowPreview] = useState(false);
+  const modalRef = useFocusTrap<HTMLDivElement>(
+    Boolean(listing),
+    () => bidState !== "loading" && onClose(),
+  );
 
   const minBid = listing ? listing.currentBid + 1 : 1;
   const parsedAmount = parseFloat(amount);
@@ -60,7 +64,7 @@ export function BidModal({ listing, onClose, onBidSuccess }: BidModalProps) {
         {/* Glow aura */}
         <div className="absolute -inset-1 bg-gradient-to-br from-indigo-500/30 via-purple-500/20 to-transparent rounded-3xl blur-xl pointer-events-none" />
 
-        <div className="relative bg-card/90 border border-border-strong rounded-3xl p-8 shadow-2xl backdrop-blur-2xl">
+        <div ref={modalRef} role="dialog" aria-modal="true" aria-labelledby="bid-modal-title" className="relative bg-card/90 border border-border-strong rounded-3xl p-8 shadow-2xl backdrop-blur-2xl">
 
           {/* ── SUCCESS STATE ─────────────────────────────── */}
           {bidState === "success" && (
@@ -97,7 +101,7 @@ export function BidModal({ listing, onClose, onBidSuccess }: BidModalProps) {
                   <p className="text-xs text-subtle uppercase tracking-widest font-bold mb-1">
                     Place a Bid
                   </p>
-                  <h2 className="text-2xl font-black tracking-tight">
+                  <h2 id="bid-modal-title" className="text-2xl font-black tracking-tight">
                     @{listing.username}
                   </h2>
                 </div>
