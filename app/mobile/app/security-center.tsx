@@ -9,7 +9,7 @@ import {
   getWalletSession,
   isSessionRestorable,
 } from "@/services/wallet-session";
-import { getSessionExpiryExplanation, isBiometricSessionValid } from "@/services/security";
+import { getSessionExpiryExplanation } from "@/services/security";
 import { useTheme } from "../src/theme/ThemeContext";
 import { CrashReportingService } from "@/services/CrashReportingService";
 
@@ -135,8 +135,6 @@ export default function SecurityCenterScreen() {
   const [activeTab, setActiveTab] = useState<TabType>('overview');
   const [sessions, setSessions] = useState<ActiveSession[]>(MOCK_SESSIONS);
 
-  useEffect(() => {
-    const loadSecurityChecks = async () => {
       const items: SecurityCheckItem[] = [];
 
       if (isBiometricAvailable) {
@@ -185,6 +183,8 @@ export default function SecurityCenterScreen() {
       }
 
       const session = await getWalletSession();
+      setWalletSession(session);
+      setSessionExplanation(await getSessionExpiryExplanation());
       if (session) {
         const isRestorable = isSessionRestorable(session);
         if (isRestorable) {
@@ -216,9 +216,8 @@ export default function SecurityCenterScreen() {
       }
 
       setSecurityItems(items);
-    };
-
-    loadSecurityChecks();
+      setLoading(false);
+      setRefreshing(false);
   }, [isBiometricAvailable, hasPinConfigured, settings]);
 
   const handleRevokeSession = (sessionId: string) => {
@@ -668,6 +667,26 @@ const styles = StyleSheet.create({
   tabText: {
     fontSize: 14,
     fontWeight: "600",
+  },
+  toolbar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  updatedText: {
+    flex: 1,
+    fontSize: 12,
+  },
+  refreshButton: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+  },
+  refreshButtonText: {
+    fontSize: 13,
+    fontWeight: "700",
   },
   scoreCard: {
     borderRadius: 16,
