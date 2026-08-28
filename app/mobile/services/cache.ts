@@ -72,58 +72,27 @@ export async function findTransactionInCache(
 }
 
 /**
- * Searches all cached transaction responses for transactions that share a
- * source or destination address with the given transaction.
- *
- * Used by the "Related Transactions" section of the transaction detail screen
- * (#97).
+ * Returns all cached transactions across all accounts (flat list).
+ * Used to find related transactions.
  */
-export async function findRelatedTransactions(params: {
-    source?: string;
-    destination?: string;
-    excludeTxHash?: string;
-    limit?: number;
-}): Promise<TransactionItem[]> {
-    const { source, destination, excludeTxHash, limit = 10 } = params;
-    if (!source && !destination) return [];
-
+export async function getCachedTransactions(): Promise<TransactionItem[]> {
     try {
         const keys = await AsyncStorage.getAllKeys();
         const cacheKeys = keys.filter((k) =>
             k.startsWith(TRANSACTIONS_CACHE_KEY_PREFIX),
         );
-
-        const matched: TransactionItem[] = [];
-
+        const all: TransactionItem[] = [];
         for (const key of cacheKeys) {
-            if (matched.length >= limit) break;
             const raw = await AsyncStorage.getItem(key);
             if (!raw) continue;
             const entry = JSON.parse(raw) as {
                 data: TransactionResponse;
                 timestamp: number;
             };
-
-            for (const item of entry.data.items) {
-                if (item.txHash === excludeTxHash) continue;
-                const addressMatch =
-                    (source      && (item.source === source      || item.destination === source))      ||
-                    (destination && (item.source === destination || item.destination === destination));
-                if (addressMatch) {
-                    matched.push(item);
-                    if (matched.length >= limit) break;
-                }
-            }
+            all.push(...entry.data.items);
         }
-
-        // Sort most recent first
-        matched.sort((a, b) =>
-            new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
-        );
-
-        return matched;
-    } catch (err) {
-        console.error('Failed to find related transactions in cache', err);
+        return all;
+    } catch {
         return [];
     }
 }

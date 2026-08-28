@@ -2,424 +2,514 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
-} from '@nestjs/common';
-import { randomBytes } from 'crypto';
-import { SupabaseService } from '../supabase/supabase.service';
-import {
-  CreateTeamDto,
-  InviteLinkResponseDto,
-  InviteMemberDto,
-  TeamMemberResponseDto,
-  TeamResponseDto,
+} from "@nestjs/common";
+import * as crypto from "crypto";
+import { SupabaseService } from "../supabase/supabase.service";
+import type {
+  TeamInvitePublic,
+  TeamInviteRecord,
+  TeamMemberPublic,
+  TeamMemberRecord,
+  TeamPublic,
+  TeamRecord,
   TeamRole,
+} from "./teams.types";
+import type {
+  CreateInviteLinkDto,
+  CreateTeamDto,
+  InviteMemberDto,
+  TransferOwnershipDto,
   UpdateMemberRoleDto,
-} from './dto/teams.dto';
+} from "./dto/teams.dto";
+
+/** 7-day expiry for invite links */
+const INVITE_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Role priority — higher number means more permissions */
+const ROLE_PRIORITY: Record<TeamRole, number> = {
+  viewer: 1,
+  member: 2,
+  admin: 3,
+  owner: 4,
+};
+
+function hasRole(actual: TeamRole, required: TeamRole): boolean {
+  return ROLE_PRIORITY[actual] >= ROLE_PRIORITY[required];
+}
 
 @Injectable()
 export class TeamsService {
+  private readonly logger = new Logger(TeamsService.name);
+
   constructor(private readonly supabase: SupabaseService) {}
 
   // ---------------------------------------------------------------------------
   // Team CRUD
   // ---------------------------------------------------------------------------
 
-  async createTeam(
-    ownerPublicKey: string,
-    dto: CreateTeamDto,
-  ): Promise<TeamResponseDto> {
-    const teamId = randomBytes(16).toString('hex');
-    const now = new Date().toISOString();
+  async createTeam(dto: CreateTeamDto, owner_id: string): Promise<TeamPublic> {
+    const client = this.supabase.getClient();
 
-    const { data: team, error: teamError } = await this.supabase
-      .getClient()
-      .from('teams')
-      .insert({
-        id: teamId,
-        name: dto.name.trim(),
-        description: dto.description?.trim() ?? null,
-        owner_public_key: ownerPublicKey,
-        created_at: now,
-      })
-      .select('id, name, description, owner_public_key, created_at')
-      .single();
+    // Create team
+    const { data: team, error: teamErr } = await client
+      .from("teams")
+      .insert({ name: dto.name, owner_id })
+      .select()
+      .single<TeamRecord>();
 
-    if (teamError) throw teamError;
+    if (teamErr || !team) {
+      this.logger.error("Failed to create team", teamErr);
+      throw new BadRequestException("Failed to create team");
+    }
 
-    // Auto-add owner as owner role
-    await this.supabase.getClient().from('team_members').insert({
-      id: randomBytes(16).toString('hex'),
-      team_id: teamId,
-      email: ownerPublicKey,
-      role: 'owner' as TeamRole,
-      status: 'active',
-      joined_at: now,
-      last_active_at: now,
+    // Add creator as owner member
+    await client.from("team_members").insert({
+      team_id: team.id,
+      user_id: owner_id,
+      email: "",
+      role: "owner" as TeamRole,
+      status: "active",
+      joined_at: new Date().toISOString(),
     });
 
-    return {
-      id: team.id as string,
-      name: team.name as string,
-      description: team.description as string | undefined,
-      ownerPublicKey: team.owner_public_key as string,
-      members: [],
-      createdAt: team.created_at as string,
-    };
+    this.logger.log(`Team created: id=${team.id} owner=${owner_id}`);
+
+    return this.toTeamPublic(team, 1);
   }
 
-  async getTeam(
-    ownerPublicKey: string,
-    teamId: string,
-  ): Promise<TeamResponseDto> {
-    const { data: team, error } = await this.supabase
-      .getClient()
-      .from('teams')
-      .select('id, name, description, owner_public_key, created_at')
-      .eq('id', teamId)
-      .maybeSingle();
+  async getTeam(teamId: string, requesterId: string): Promise<TeamPublic> {
+    await this.requireMembership(teamId, requesterId);
 
-    if (error) throw error;
-    if (!team) throw new NotFoundException('Team not found');
+    const team = await this.findTeamOrThrow(teamId);
+    const memberCount = await this.countMembers(teamId);
 
-    await this.assertMember(teamId, ownerPublicKey);
-
-    const members = await this.getMembers(teamId);
-    return {
-      id: team.id as string,
-      name: team.name as string,
-      description: team.description as string | undefined,
-      ownerPublicKey: team.owner_public_key as string,
-      members,
-      createdAt: team.created_at as string,
-    };
+    return this.toTeamPublic(team, memberCount);
   }
 
-  async listTeams(ownerPublicKey: string): Promise<TeamResponseDto[]> {
-    // Return teams where the user is a member
-    const { data: memberships, error } = await this.supabase
-      .getClient()
-      .from('team_members')
-      .select('team_id')
-      .eq('email', ownerPublicKey)
-      .eq('status', 'active');
+  async deleteTeam(teamId: string, requesterId: string): Promise<void> {
+    await this.requireRole(teamId, requesterId, "owner");
 
-    if (error) throw error;
+    const client = this.supabase.getClient();
+    await client.from("team_invites").delete().eq("team_id", teamId);
+    await client.from("team_members").delete().eq("team_id", teamId);
 
-    const teamIds = (memberships ?? []).map((m: Record<string, unknown>) => m.team_id as string);
-    if (teamIds.length === 0) return [];
+    const { error } = await client.from("teams").delete().eq("id", teamId);
+    if (error) {
+      this.logger.error("Failed to delete team", error);
+      throw new BadRequestException("Failed to delete team");
+    }
 
-    const { data: teams, error: teamsError } = await this.supabase
-      .getClient()
-      .from('teams')
-      .select('id, name, description, owner_public_key, created_at')
-      .in('id', teamIds);
-
-    if (teamsError) throw teamsError;
-
-    return await Promise.all(
-      (teams ?? []).map(async (team: Record<string, unknown>) => {
-        const members = await this.getMembers(team.id as string);
-        return {
-          id: team.id as string,
-          name: team.name as string,
-          description: team.description as string | undefined,
-          ownerPublicKey: team.owner_public_key as string,
-          members,
-          createdAt: team.created_at as string,
-        };
-      }),
-    );
-  }
-
-  async deleteTeam(ownerPublicKey: string, teamId: string): Promise<void> {
-    await this.assertRole(teamId, ownerPublicKey, 'owner');
-
-    await this.supabase.getClient().from('team_members').delete().eq('team_id', teamId);
-
-    const { error } = await this.supabase
-      .getClient()
-      .from('teams')
-      .delete()
-      .eq('id', teamId)
-      .eq('owner_public_key', ownerPublicKey);
-
-    if (error) throw error;
+    this.logger.log(`Team deleted: id=${teamId} by=${requesterId}`);
   }
 
   // ---------------------------------------------------------------------------
   // Member management
   // ---------------------------------------------------------------------------
 
-  async inviteMember(
-    actorPublicKey: string,
-    teamId: string,
-    dto: InviteMemberDto,
-  ): Promise<TeamMemberResponseDto> {
-    await this.assertRole(teamId, actorPublicKey, 'admin');
+  async listMembers(teamId: string, requesterId: string): Promise<TeamMemberPublic[]> {
+    await this.requireMembership(teamId, requesterId);
 
-    const existing = await this.findMember(teamId, dto.email);
-    if (existing) {
-      throw new BadRequestException('Member already exists in the team');
+    const client = this.supabase.getClient();
+    const { data, error } = await client
+      .from("team_members")
+      .select("*")
+      .eq("team_id", teamId)
+      .order("joined_at", { ascending: true });
+
+    if (error) {
+      this.logger.error("Failed to list members", error);
+      throw new BadRequestException("Failed to list team members");
     }
 
-    const now = new Date().toISOString();
-    const { data, error } = await this.supabase
-      .getClient()
-      .from('team_members')
-      .insert({
-        id: randomBytes(16).toString('hex'),
-        team_id: teamId,
-        email: dto.email.toLowerCase().trim(),
-        role: dto.role,
-        status: 'pending',
-        joined_at: now,
-        last_active_at: null,
-      })
-      .select('id, email, role, status, joined_at, last_active_at')
-      .single();
+    return (data ?? []).map((m) => this.toMemberPublic(m as TeamMemberRecord));
+  }
 
-    if (error) throw error;
-    return this.toMemberDto(data as Record<string, unknown>);
+  async inviteMember(
+    teamId: string,
+    requesterId: string,
+    dto: InviteMemberDto,
+  ): Promise<TeamMemberPublic> {
+    await this.requireRole(teamId, requesterId, "admin");
+
+    // Prevent owner role assignment via direct invite
+    if (dto.role === "owner") {
+      throw new ForbiddenException("Cannot assign owner role via invite. Use transfer ownership.");
+    }
+
+    const client = this.supabase.getClient();
+
+    // Check for existing invite
+    const { data: existing } = await client
+      .from("team_members")
+      .select("id")
+      .eq("team_id", teamId)
+      .eq("email", dto.email)
+      .maybeSingle();
+
+    if (existing) {
+      throw new BadRequestException("Member already exists or has a pending invite");
+    }
+
+    const { data: member, error } = await client
+      .from("team_members")
+      .insert({
+        team_id: teamId,
+        user_id: crypto.randomUUID(),
+        email: dto.email,
+        name: dto.name ?? null,
+        role: dto.role,
+        status: "pending",
+        joined_at: new Date().toISOString(),
+        invited_by: requesterId,
+      })
+      .select()
+      .single<TeamMemberRecord>();
+
+    if (error || !member) {
+      this.logger.error("Failed to invite member", error);
+      throw new BadRequestException("Failed to invite member");
+    }
+
+    this.logger.log(`Member invited: team=${teamId} email=${dto.email} role=${dto.role}`);
+
+    return this.toMemberPublic(member);
   }
 
   async updateMemberRole(
-    actorPublicKey: string,
     teamId: string,
     memberId: string,
+    requesterId: string,
     dto: UpdateMemberRoleDto,
-  ): Promise<TeamMemberResponseDto> {
-    await this.assertRole(teamId, actorPublicKey, 'owner');
+  ): Promise<TeamMemberPublic> {
+    await this.requireRole(teamId, requesterId, "admin");
 
-    const { data, error } = await this.supabase
-      .getClient()
-      .from('team_members')
+    if (dto.role === "owner") {
+      throw new ForbiddenException("Cannot assign owner role directly. Use transfer ownership.");
+    }
+
+    const member = await this.findMemberOrThrow(memberId, teamId);
+
+    // Cannot demote/change the owner
+    if (member.role === "owner") {
+      throw new ForbiddenException("Cannot change the owner's role. Use transfer ownership.");
+    }
+
+    // Admins cannot change other admins' roles
+    const requesterMember = await this.findRequesterMember(teamId, requesterId);
+    if (requesterMember.role === "admin" && member.role === "admin") {
+      throw new ForbiddenException("Admins cannot change other admins' roles");
+    }
+
+    const client = this.supabase.getClient();
+    const { data: updated, error } = await client
+      .from("team_members")
       .update({ role: dto.role })
-      .eq('id', memberId)
-      .eq('team_id', teamId)
-      .select('id, email, role, status, joined_at, last_active_at')
-      .maybeSingle();
+      .eq("id", memberId)
+      .eq("team_id", teamId)
+      .select()
+      .single<TeamMemberRecord>();
 
-    if (error) throw error;
-    if (!data) throw new NotFoundException('Member not found');
-    return this.toMemberDto(data as Record<string, unknown>);
+    if (error || !updated) {
+      throw new BadRequestException("Failed to update member role");
+    }
+
+    return this.toMemberPublic(updated);
   }
 
   async removeMember(
-    actorPublicKey: string,
     teamId: string,
     memberId: string,
+    requesterId: string,
   ): Promise<void> {
-    await this.assertRole(teamId, actorPublicKey, 'owner');
+    await this.requireRole(teamId, requesterId, "owner");
 
-    // Cannot remove the owner
-    const { data: member } = await this.supabase
-      .getClient()
-      .from('team_members')
-      .select('role')
-      .eq('id', memberId)
-      .eq('team_id', teamId)
-      .maybeSingle();
+    const member = await this.findMemberOrThrow(memberId, teamId);
 
-    if (!member) throw new NotFoundException('Member not found');
-    if ((member as Record<string, unknown>).role === 'owner') {
-      throw new ForbiddenException('Cannot remove the team owner');
+    if (member.role === "owner") {
+      throw new ForbiddenException("Cannot remove the team owner");
     }
 
-    await this.supabase
-      .getClient()
-      .from('team_members')
+    const client = this.supabase.getClient();
+    const { error } = await client
+      .from("team_members")
       .delete()
-      .eq('id', memberId)
-      .eq('team_id', teamId);
+      .eq("id", memberId)
+      .eq("team_id", teamId);
+
+    if (error) {
+      throw new BadRequestException("Failed to remove member");
+    }
+
+    this.logger.log(`Member removed: id=${memberId} from team=${teamId}`);
   }
 
   // ---------------------------------------------------------------------------
   // Invite links
   // ---------------------------------------------------------------------------
 
-  async generateInviteLink(
-    actorPublicKey: string,
+  async createInviteLink(
     teamId: string,
-  ): Promise<InviteLinkResponseDto> {
-    await this.assertRole(teamId, actorPublicKey, 'admin');
+    requesterId: string,
+    dto: CreateInviteLinkDto,
+    siteUrl: string,
+  ): Promise<TeamInvitePublic> {
+    await this.requireRole(teamId, requesterId, "admin");
 
-    const token = randomBytes(32).toString('hex');
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-
-    await this.supabase.getClient().from('team_invites').insert({
-      id: randomBytes(16).toString('hex'),
-      team_id: teamId,
-      token,
-      expires_at: expiresAt,
-      created_at: new Date().toISOString(),
-    });
-
-    const baseUrl = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://quickex.to';
-    return {
-      inviteToken: token,
-      inviteUrl: `${baseUrl}/teams/join/${token}`,
-      expiresAt,
-    };
-  }
-
-  async acceptInvite(
-    memberEmail: string,
-    teamId: string,
-    token: string,
-  ): Promise<void> {
-    const { data: invite, error } = await this.supabase
-      .getClient()
-      .from('team_invites')
-      .select('id, expires_at')
-      .eq('team_id', teamId)
-      .eq('token', token)
-      .maybeSingle();
-
-    if (error) throw error;
-    if (!invite) throw new NotFoundException('Invite not found or already used');
-
-    const expiresAt = new Date((invite as Record<string, unknown>).expires_at as string);
-    if (expiresAt < new Date()) {
-      throw new BadRequestException('Invite link has expired');
+    if (dto.role === "owner") {
+      throw new ForbiddenException("Cannot create invite link with owner role");
     }
 
-    const now = new Date().toISOString();
-    await this.supabase.getClient().from('team_members').upsert(
-      {
-        id: randomBytes(16).toString('hex'),
-        team_id: teamId,
-        email: memberEmail.toLowerCase().trim(),
-        role: 'member' as TeamRole,
-        status: 'active',
-        joined_at: now,
-        last_active_at: now,
-      },
-      { onConflict: 'team_id,email' },
-    );
+    const token = crypto.randomBytes(32).toString("hex");
+    const expiresAt = new Date(Date.now() + INVITE_EXPIRY_MS).toISOString();
 
-    // Consume the invite
-    await this.supabase
-      .getClient()
-      .from('team_invites')
-      .delete()
-      .eq('id', (invite as Record<string, unknown>).id as string);
+    const client = this.supabase.getClient();
+    const { data: invite, error } = await client
+      .from("team_invites")
+      .insert({
+        team_id: teamId,
+        token,
+        role: dto.role,
+        created_by: requesterId,
+        expires_at: expiresAt,
+        used: false,
+      })
+      .select()
+      .single<TeamInviteRecord>();
+
+    if (error || !invite) {
+      this.logger.error("Failed to create invite link", error);
+      throw new BadRequestException("Failed to create invite link");
+    }
+
+    this.logger.log(`Invite link created: team=${teamId} role=${dto.role} expires=${expiresAt}`);
+
+    return this.toInvitePublic(invite, siteUrl);
   }
+
+  async acceptInviteLink(token: string, userId: string, email: string): Promise<TeamMemberPublic> {
+    const client = this.supabase.getClient();
+
+    const { data: invite, error: inviteErr } = await client
+      .from("team_invites")
+      .select("*")
+      .eq("token", token)
+      .eq("used", false)
+      .maybeSingle<TeamInviteRecord>();
+
+    if (inviteErr || !invite) {
+      throw new NotFoundException("Invite link not found or already used");
+    }
+
+    if (new Date(invite.expires_at) < new Date()) {
+      throw new BadRequestException("Invite link has expired");
+    }
+
+    // Check not already a member
+    const { data: existingMember } = await client
+      .from("team_members")
+      .select("id")
+      .eq("team_id", invite.team_id)
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (existingMember) {
+      throw new BadRequestException("You are already a member of this team");
+    }
+
+    // Add member
+    const { data: member, error: memberErr } = await client
+      .from("team_members")
+      .insert({
+        team_id: invite.team_id,
+        user_id: userId,
+        email,
+        role: invite.role,
+        status: "active",
+        joined_at: new Date().toISOString(),
+        invited_by: invite.created_by,
+      })
+      .select()
+      .single<TeamMemberRecord>();
+
+    if (memberErr || !member) {
+      throw new BadRequestException("Failed to join team");
+    }
+
+    // Mark invite as used
+    await client
+      .from("team_invites")
+      .update({ used: true })
+      .eq("id", invite.id);
+
+    this.logger.log(`Invite accepted: token=${token} user=${userId} team=${invite.team_id}`);
+
+    return this.toMemberPublic(member);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Transfer ownership
+  // ---------------------------------------------------------------------------
 
   async transferOwnership(
-    ownerPublicKey: string,
     teamId: string,
-    newOwnerMemberId: string,
+    requesterId: string,
+    dto: TransferOwnershipDto,
   ): Promise<void> {
-    await this.assertRole(teamId, ownerPublicKey, 'owner');
+    await this.requireRole(teamId, requesterId, "owner");
 
-    const { data: newOwnerMember } = await this.supabase
-      .getClient()
-      .from('team_members')
-      .select('id, email')
-      .eq('id', newOwnerMemberId)
-      .eq('team_id', teamId)
-      .maybeSingle();
+    const client = this.supabase.getClient();
 
-    if (!newOwnerMember) throw new NotFoundException('Member not found');
+    // Find new owner member record
+    const { data: newOwnerMember, error: memberErr } = await client
+      .from("team_members")
+      .select("*")
+      .eq("team_id", teamId)
+      .eq("user_id", dto.new_owner_id)
+      .maybeSingle<TeamMemberRecord>();
+
+    if (memberErr || !newOwnerMember) {
+      throw new NotFoundException("New owner is not a member of this team");
+    }
 
     // Demote current owner to admin
-    await this.supabase
-      .getClient()
-      .from('team_members')
-      .update({ role: 'admin' as TeamRole })
-      .eq('team_id', teamId)
-      .eq('email', ownerPublicKey);
+    const { data: requesterMember } = await client
+      .from("team_members")
+      .select("id")
+      .eq("team_id", teamId)
+      .eq("user_id", requesterId)
+      .maybeSingle<TeamMemberRecord>();
+
+    if (requesterMember) {
+      await client
+        .from("team_members")
+        .update({ role: "admin" })
+        .eq("id", requesterMember.id);
+    }
 
     // Promote new owner
-    await this.supabase
-      .getClient()
-      .from('team_members')
-      .update({ role: 'owner' as TeamRole })
-      .eq('id', newOwnerMemberId)
-      .eq('team_id', teamId);
+    await client
+      .from("team_members")
+      .update({ role: "owner" })
+      .eq("id", newOwnerMember.id);
 
-    // Update the teams table
-    await this.supabase
-      .getClient()
-      .from('teams')
-      .update({
-        owner_public_key: (newOwnerMember as Record<string, unknown>).email as string,
-      })
-      .eq('id', teamId);
+    // Update teams table owner_id
+    await client
+      .from("teams")
+      .update({ owner_id: dto.new_owner_id })
+      .eq("id", teamId);
+
+    this.logger.log(
+      `Ownership transferred: team=${teamId} from=${requesterId} to=${dto.new_owner_id}`,
+    );
   }
 
   // ---------------------------------------------------------------------------
-  // Helpers
+  // Private helpers
   // ---------------------------------------------------------------------------
 
-  private async getMembers(teamId: string): Promise<TeamMemberResponseDto[]> {
-    const { data, error } = await this.supabase
-      .getClient()
-      .from('team_members')
-      .select('id, email, role, status, joined_at, last_active_at')
-      .eq('team_id', teamId)
-      .order('joined_at', { ascending: true });
+  private async findTeamOrThrow(teamId: string): Promise<TeamRecord> {
+    const client = this.supabase.getClient();
+    const { data, error } = await client
+      .from("teams")
+      .select("*")
+      .eq("id", teamId)
+      .maybeSingle<TeamRecord>();
 
-    if (error) throw error;
-    return (data ?? []).map((m: Record<string, unknown>) => this.toMemberDto(m));
-  }
-
-  private async findMember(
-    teamId: string,
-    email: string,
-  ): Promise<TeamMemberResponseDto | null> {
-    const { data } = await this.supabase
-      .getClient()
-      .from('team_members')
-      .select('id, email, role, status, joined_at, last_active_at')
-      .eq('team_id', teamId)
-      .eq('email', email.toLowerCase().trim())
-      .maybeSingle();
-
-    return data ? this.toMemberDto(data as Record<string, unknown>) : null;
-  }
-
-  private async assertMember(
-    teamId: string,
-    publicKey: string,
-  ): Promise<void> {
-    const member = await this.findMember(teamId, publicKey);
-    if (!member) {
-      throw new ForbiddenException('You are not a member of this team');
+    if (error || !data) {
+      throw new NotFoundException("Team not found");
     }
+    return data;
   }
 
-  /**
-   * Assert that the actor has at least the required role.
-   * Role hierarchy: owner > admin > member > viewer
-   */
-  private async assertRole(
+  private async findMemberOrThrow(memberId: string, teamId: string): Promise<TeamMemberRecord> {
+    const client = this.supabase.getClient();
+    const { data, error } = await client
+      .from("team_members")
+      .select("*")
+      .eq("id", memberId)
+      .eq("team_id", teamId)
+      .maybeSingle<TeamMemberRecord>();
+
+    if (error || !data) {
+      throw new NotFoundException("Member not found");
+    }
+    return data;
+  }
+
+  private async findRequesterMember(teamId: string, userId: string): Promise<TeamMemberRecord> {
+    const client = this.supabase.getClient();
+    const { data, error } = await client
+      .from("team_members")
+      .select("*")
+      .eq("team_id", teamId)
+      .eq("user_id", userId)
+      .maybeSingle<TeamMemberRecord>();
+
+    if (error || !data) {
+      throw new ForbiddenException("You are not a member of this team");
+    }
+    return data;
+  }
+
+  private async requireMembership(teamId: string, userId: string): Promise<void> {
+    await this.findRequesterMember(teamId, userId);
+  }
+
+  private async requireRole(
     teamId: string,
-    publicKey: string,
-    requiredRole: 'owner' | 'admin',
+    userId: string,
+    required: TeamRole,
   ): Promise<void> {
-    const member = await this.findMember(teamId, publicKey);
-    if (!member) throw new ForbiddenException('Not a team member');
-
-    const hierarchy: TeamRole[] = ['viewer', 'member', 'admin', 'owner'];
-    const actorLevel = hierarchy.indexOf(member.role);
-    const requiredLevel = hierarchy.indexOf(requiredRole);
-
-    if (actorLevel < requiredLevel) {
+    const member = await this.findRequesterMember(teamId, userId);
+    if (!hasRole(member.role, required)) {
       throw new ForbiddenException(
-        `This action requires ${requiredRole} role or higher`,
+        `Role "${required}" or higher is required for this operation`,
       );
     }
   }
 
-  private toMemberDto(row: Record<string, unknown>): TeamMemberResponseDto {
+  private async countMembers(teamId: string): Promise<number> {
+    const client = this.supabase.getClient();
+    const { count } = await client
+      .from("team_members")
+      .select("id", { count: "exact", head: true })
+      .eq("team_id", teamId);
+    return count ?? 0;
+  }
+
+  private toTeamPublic(team: TeamRecord, memberCount: number): TeamPublic {
     return {
-      id: row.id as string,
-      email: row.email as string,
-      role: row.role as TeamRole,
-      status: row.status as 'active' | 'pending',
-      joinedAt: row.joined_at as string,
-      lastActiveAt: (row.last_active_at as string | null) ?? null,
+      id: team.id,
+      name: team.name,
+      owner_id: team.owner_id,
+      member_count: memberCount,
+      created_at: team.created_at,
+    };
+  }
+
+  private toMemberPublic(member: TeamMemberRecord): TeamMemberPublic {
+    return {
+      id: member.id,
+      user_id: member.user_id,
+      email: member.email,
+      name: member.name,
+      role: member.role,
+      joined_at: member.joined_at,
+      last_active_at: member.last_active_at,
+      status: member.status,
+    };
+  }
+
+  private toInvitePublic(invite: TeamInviteRecord, siteUrl: string): TeamInvitePublic {
+    return {
+      id: invite.id,
+      team_id: invite.team_id,
+      invite_url: `${siteUrl}/teams/join?token=${invite.token}`,
+      role: invite.role,
+      expires_at: invite.expires_at,
+      created_at: invite.created_at,
     };
   }
 }

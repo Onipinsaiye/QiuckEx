@@ -6,151 +6,205 @@ import {
   HttpCode,
   HttpStatus,
   Param,
-  Patch,
+  ParseUUIDPipe,
   Post,
-  Query,
-} from '@nestjs/common';
+  Put,
+  Req,
+  UsePipes,
+  ValidationPipe,
+} from "@nestjs/common";
 import {
   ApiOperation,
-  ApiParam,
-  ApiQuery,
   ApiResponse,
   ApiTags,
-} from '@nestjs/swagger';
-import { TeamsService } from './teams.service';
+  ApiHeader,
+} from "@nestjs/swagger";
+import { Request } from "express";
+import { TeamsService } from "./teams.service";
 import {
+  CreateInviteLinkDto,
   CreateTeamDto,
-  InviteLinkResponseDto,
   InviteMemberDto,
-  TeamMemberResponseDto,
-  TeamResponseDto,
+  TransferOwnershipDto,
   UpdateMemberRoleDto,
-} from './dto/teams.dto';
+} from "./dto/teams.dto";
 
-@ApiTags('teams')
-@Controller('teams')
+function getSiteUrl(req: Request): string {
+  const proto = req.headers["x-forwarded-proto"] ?? req.protocol ?? "https";
+  const host = req.headers["x-forwarded-host"] ?? req.headers["host"] ?? "quickex.to";
+  return `${proto}://${host}`;
+}
+
+/** Resolve requester identity from request context (API key or header) */
+function getRequesterId(req: Request): string {
+  const fromHeader = (req.headers["x-user-id"] as string | undefined)?.trim();
+  const fromApiKey = (req as unknown as Record<string, unknown>)?.["apiKey"] as
+    | { id: string }
+    | undefined;
+  return fromHeader ?? fromApiKey?.id ?? "anonymous";
+}
+
+@ApiTags("teams")
+@ApiHeader({
+  name: "X-User-Id",
+  description: "Authenticated user ID",
+  required: false,
+})
+@Controller("teams")
+@UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
 export class TeamsController {
-  constructor(private readonly teams: TeamsService) {}
+  constructor(private readonly teamsService: TeamsService) {}
 
-  // ---------------------------------------------------------------------------
-  // Teams
-  // ---------------------------------------------------------------------------
-
+  /**
+   * POST /teams
+   * Create a new team. Caller becomes the owner.
+   */
   @Post()
-  @ApiOperation({ summary: 'Create a new team' })
-  @ApiResponse({ status: 201, type: TeamResponseDto })
-  @ApiQuery({ name: 'ownerPublicKey', required: true, description: 'Stellar public key of the creator' })
-  async createTeam(
-    @Query('ownerPublicKey') ownerPublicKey: string,
-    @Body() dto: CreateTeamDto,
-  ): Promise<TeamResponseDto> {
-    return this.teams.createTeam(ownerPublicKey, dto);
+  @ApiOperation({ summary: "Create a new team" })
+  @ApiResponse({ status: 201, description: "Team created" })
+  async createTeam(@Body() dto: CreateTeamDto, @Req() req: Request) {
+    const owner = getRequesterId(req);
+    return this.teamsService.createTeam(dto, owner);
   }
 
-  @Get()
-  @ApiOperation({ summary: 'List teams for a user' })
-  @ApiResponse({ status: 200, type: [TeamResponseDto] })
-  @ApiQuery({ name: 'ownerPublicKey', required: true })
-  async listTeams(
-    @Query('ownerPublicKey') ownerPublicKey: string,
-  ): Promise<{ teams: TeamResponseDto[] }> {
-    const teams = await this.teams.listTeams(ownerPublicKey);
-    return { teams };
+  /**
+   * GET /teams/:id
+   * Get team details. Requires membership.
+   */
+  @Get(":id")
+  @ApiOperation({ summary: "Get team details" })
+  @ApiResponse({ status: 200, description: "Team details" })
+  @ApiResponse({ status: 403, description: "Not a team member" })
+  @ApiResponse({ status: 404, description: "Team not found" })
+  async getTeam(@Param("id", ParseUUIDPipe) id: string, @Req() req: Request) {
+    const requesterId = getRequesterId(req);
+    return this.teamsService.getTeam(id, requesterId);
   }
 
-  @Get(':teamId')
-  @ApiOperation({ summary: 'Get a team by ID' })
-  @ApiResponse({ status: 200, type: TeamResponseDto })
-  @ApiParam({ name: 'teamId' })
-  async getTeam(
-    @Query('ownerPublicKey') ownerPublicKey: string,
-    @Param('teamId') teamId: string,
-  ): Promise<TeamResponseDto> {
-    return this.teams.getTeam(ownerPublicKey, teamId);
-  }
-
-  @Delete(':teamId')
+  /**
+   * DELETE /teams/:id
+   * Delete a team. Owner only.
+   */
+  @Delete(":id")
   @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: 'Delete a team (owner only)' })
-  @ApiParam({ name: 'teamId' })
-  async deleteTeam(
-    @Query('ownerPublicKey') ownerPublicKey: string,
-    @Param('teamId') teamId: string,
-  ): Promise<void> {
-    return this.teams.deleteTeam(ownerPublicKey, teamId);
+  @ApiOperation({ summary: "Delete a team (owner only)" })
+  @ApiResponse({ status: 204, description: "Team deleted" })
+  @ApiResponse({ status: 403, description: "Insufficient permissions" })
+  async deleteTeam(@Param("id", ParseUUIDPipe) id: string, @Req() req: Request) {
+    const requesterId = getRequesterId(req);
+    await this.teamsService.deleteTeam(id, requesterId);
   }
 
-  // ---------------------------------------------------------------------------
-  // Members
-  // ---------------------------------------------------------------------------
+  /**
+   * GET /teams/:id/members
+   * List team members with joined date, last active, and role.
+   */
+  @Get(":id/members")
+  @ApiOperation({ summary: "List team members" })
+  @ApiResponse({ status: 200, description: "Member list" })
+  async listMembers(@Param("id", ParseUUIDPipe) id: string, @Req() req: Request) {
+    const requesterId = getRequesterId(req);
+    return this.teamsService.listMembers(id, requesterId);
+  }
 
-  @Post(':teamId/members')
-  @ApiOperation({ summary: 'Invite a member to the team' })
-  @ApiResponse({ status: 201, type: TeamMemberResponseDto })
+  /**
+   * POST /teams/:id/members
+   * Invite a member by email. Admin/Owner only.
+   */
+  @Post(":id/members")
+  @ApiOperation({ summary: "Invite a member to the team" })
+  @ApiResponse({ status: 201, description: "Member invited" })
+  @ApiResponse({ status: 403, description: "Admin or Owner required" })
   async inviteMember(
-    @Query('actorPublicKey') actorPublicKey: string,
-    @Param('teamId') teamId: string,
+    @Param("id", ParseUUIDPipe) id: string,
     @Body() dto: InviteMemberDto,
-  ): Promise<TeamMemberResponseDto> {
-    return this.teams.inviteMember(actorPublicKey, teamId, dto);
+    @Req() req: Request,
+  ) {
+    const requesterId = getRequesterId(req);
+    return this.teamsService.inviteMember(id, requesterId, dto);
   }
 
-  @Patch(':teamId/members/:memberId/role')
-  @ApiOperation({ summary: 'Update a member role (owner only)' })
-  @ApiResponse({ status: 200, type: TeamMemberResponseDto })
+  /**
+   * PUT /teams/:id/members/:memberId/role
+   * Update a member's role. Admin/Owner only.
+   */
+  @Put(":id/members/:memberId/role")
+  @ApiOperation({ summary: "Update a member's role" })
+  @ApiResponse({ status: 200, description: "Role updated" })
   async updateMemberRole(
-    @Query('actorPublicKey') actorPublicKey: string,
-    @Param('teamId') teamId: string,
-    @Param('memberId') memberId: string,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Param("memberId", ParseUUIDPipe) memberId: string,
     @Body() dto: UpdateMemberRoleDto,
-  ): Promise<TeamMemberResponseDto> {
-    return this.teams.updateMemberRole(actorPublicKey, teamId, memberId, dto);
+    @Req() req: Request,
+  ) {
+    const requesterId = getRequesterId(req);
+    return this.teamsService.updateMemberRole(id, memberId, requesterId, dto);
   }
 
-  @Delete(':teamId/members/:memberId')
+  /**
+   * DELETE /teams/:id/members/:memberId
+   * Remove a member. Owner only.
+   */
+  @Delete(":id/members/:memberId")
   @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: 'Remove a member from the team (owner only)' })
+  @ApiOperation({ summary: "Remove a member from the team (owner only)" })
+  @ApiResponse({ status: 204, description: "Member removed" })
   async removeMember(
-    @Query('actorPublicKey') actorPublicKey: string,
-    @Param('teamId') teamId: string,
-    @Param('memberId') memberId: string,
-  ): Promise<void> {
-    return this.teams.removeMember(actorPublicKey, teamId, memberId);
+    @Param("id", ParseUUIDPipe) id: string,
+    @Param("memberId", ParseUUIDPipe) memberId: string,
+    @Req() req: Request,
+  ) {
+    const requesterId = getRequesterId(req);
+    await this.teamsService.removeMember(id, memberId, requesterId);
   }
 
-  // ---------------------------------------------------------------------------
-  // Invite links
-  // ---------------------------------------------------------------------------
-
-  @Post(':teamId/invite-link')
-  @ApiOperation({ summary: 'Generate a 7-day invite link for the team' })
-  @ApiResponse({ status: 201, type: InviteLinkResponseDto })
-  async generateInviteLink(
-    @Query('actorPublicKey') actorPublicKey: string,
-    @Param('teamId') teamId: string,
-  ): Promise<InviteLinkResponseDto> {
-    return this.teams.generateInviteLink(actorPublicKey, teamId);
+  /**
+   * POST /teams/:id/invite-link
+   * Generate a 7-day invite link. Admin/Owner only.
+   */
+  @Post(":id/invite-link")
+  @ApiOperation({ summary: "Create an invite link with 7-day expiry" })
+  @ApiResponse({ status: 201, description: "Invite link created" })
+  async createInviteLink(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: CreateInviteLinkDto,
+    @Req() req: Request,
+  ) {
+    const requesterId = getRequesterId(req);
+    const siteUrl = getSiteUrl(req);
+    return this.teamsService.createInviteLink(id, requesterId, dto, siteUrl);
   }
 
-  @Post(':teamId/join')
+  /**
+   * POST /teams/join
+   * Accept an invite link. Token provided in body.
+   */
+  @Post("join")
+  @ApiOperation({ summary: "Join a team via invite link token" })
+  @ApiResponse({ status: 201, description: "Joined team" })
+  async acceptInviteLink(
+    @Body("token") token: string,
+    @Req() req: Request,
+  ) {
+    const userId = getRequesterId(req);
+    const email = (req.headers["x-user-email"] as string | undefined) ?? "";
+    return this.teamsService.acceptInviteLink(token, userId, email);
+  }
+
+  /**
+   * POST /teams/:id/transfer-ownership
+   * Transfer ownership. Owner only.
+   */
+  @Post(":id/transfer-ownership")
   @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: 'Accept a team invite via token' })
-  async acceptInvite(
-    @Query('memberEmail') memberEmail: string,
-    @Param('teamId') teamId: string,
-    @Body('token') token: string,
-  ): Promise<void> {
-    return this.teams.acceptInvite(memberEmail, teamId, token);
-  }
-
-  @Post(':teamId/transfer-ownership')
-  @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: 'Transfer team ownership to another member (owner only)' })
+  @ApiOperation({ summary: "Transfer team ownership (owner only)" })
+  @ApiResponse({ status: 204, description: "Ownership transferred" })
   async transferOwnership(
-    @Query('ownerPublicKey') ownerPublicKey: string,
-    @Param('teamId') teamId: string,
-    @Body('newOwnerMemberId') newOwnerMemberId: string,
-  ): Promise<void> {
-    return this.teams.transferOwnership(ownerPublicKey, teamId, newOwnerMemberId);
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: TransferOwnershipDto,
+    @Req() req: Request,
+  ) {
+    const requesterId = getRequesterId(req);
+    await this.teamsService.transferOwnership(id, requesterId, dto);
   }
 }

@@ -10,6 +10,7 @@ import {
     ActivityIndicator,
     Alert,
     Linking,
+    FlatList,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -21,8 +22,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../src/theme/ThemeContext';
 import { StatusTimeline } from '../../components/transaction/StatusTimeline';
 import { CopyableRow } from '../../components/transaction/CopyableRow';
-import { findTransactionInCache, findRelatedTransactions } from '../../services/cache';
+import { findTransactionInCache, getCachedTransactions } from '../../services/cache';
 import type { TransactionItem } from '../../types/transaction';
+import type { ThemeTokens } from '../../src/theme/tokens';
 
 const fileSystemCompat = FileSystem as typeof FileSystem & {
     cacheDirectory?: string | null;
@@ -235,58 +237,61 @@ function buildReceiptSvg(
 }
 
 // ---------------------------------------------------------------------------
-// Related Transactions sub-component (#97)
-// Shows recent transactions involving the same counterparty (source/destination)
+// RelatedTransactions — shows transactions involving same addresses
 // ---------------------------------------------------------------------------
 
 interface RelatedTransactionsProps {
-    source: string | undefined;
-    destination: string | undefined;
-    currentTxHash: string | undefined;
-    theme: ReturnType<typeof useTheme>['theme'];
+    currentId: string;
+    source: string;
+    destination: string;
+    theme: ThemeTokens;
+    onSelect: (tx: TransactionItem) => void;
 }
 
 function RelatedTransactions({
+    currentId,
     source,
     destination,
-    currentTxHash,
     theme,
+    onSelect,
 }: RelatedTransactionsProps) {
-    const router = useRouter();
     const [related, setRelated] = useState<TransactionItem[]>([]);
-    const [loadingRelated, setLoadingRelated] = useState(true);
+    const [loading, setLoading] = useState(true);
 
     useEffect(() => {
         let cancelled = false;
-        setLoadingRelated(true);
-
-        findRelatedTransactions({ source, destination, excludeTxHash: currentTxHash })
-            .then((items) => {
-                if (!cancelled) setRelated(items.slice(0, 5));
-            })
-            .catch(() => {
-                /* silently ignore cache miss */
-            })
-            .finally(() => {
-                if (!cancelled) setLoadingRelated(false);
-            });
-
+        getCachedTransactions().then((all) => {
+            if (cancelled) return;
+            const filtered = all
+                .filter(
+                    (t) =>
+                        t.pagingToken !== currentId &&
+                        (t.source === source ||
+                            t.destination === destination ||
+                            t.source === destination ||
+                            t.destination === source),
+                )
+                .slice(0, 5);
+            setRelated(filtered);
+            setLoading(false);
+        });
         return () => {
             cancelled = true;
         };
-    }, [source, destination, currentTxHash]);
+    }, [currentId, source, destination]);
 
-    if (loadingRelated) return null;
-    if (related.length === 0) return null;
+    if (loading || related.length === 0) return null;
 
     return (
-        <View style={relatedStyles.section}>
-            <Text style={[relatedStyles.title, { color: theme.textPrimary }]}>
+        <View style={styles.section}>
+            <Text
+                style={[styles.sectionTitle, { color: theme.textPrimary }]}
+            >
                 Related Transactions
             </Text>
             <View
                 style={[
-                    relatedStyles.card,
+                    styles.card,
                     {
                         backgroundColor: theme.surfaceElevated,
                         borderColor: theme.border,
@@ -296,84 +301,68 @@ function RelatedTransactions({
                 {related.map((item, index) => {
                     const asset = formatAsset(item.asset);
                     const isLast = index === related.length - 1;
-                    const statusColor =
-                        item.status === 'Success'
-                            ? theme.status.success
-                            : theme.status.warning;
+                    const isSuccess = item.status === 'Success';
                     return (
                         <TouchableOpacity
-                            key={item.txHash ?? item.pagingToken}
-                            onPress={() =>
-                                router.push({
-                                    pathname: '/transaction/[id]',
-                                    params: {
-                                        id: item.pagingToken,
-                                        amount: item.amount,
-                                        asset: item.asset,
-                                        memo: item.memo ?? '',
-                                        timestamp: item.timestamp,
-                                        txHash: item.txHash,
-                                        source: item.source,
-                                        destination: item.destination,
-                                        status: item.status,
-                                    },
-                                })
-                            }
+                            key={item.pagingToken}
+                            onPress={() => onSelect(item)}
+                            activeOpacity={0.7}
                             style={[
                                 relatedStyles.row,
                                 !isLast && {
-                                    borderBottomWidth: StyleSheet.hairlineWidth,
                                     borderBottomColor: theme.border,
+                                    borderBottomWidth: StyleSheet.hairlineWidth,
                                 },
                             ]}
-                            activeOpacity={0.7}
                         >
-                            <View style={relatedStyles.rowLeft}>
+                            <View
+                                style={[
+                                    relatedStyles.dot,
+                                    {
+                                        backgroundColor: isSuccess
+                                            ? theme.status.successBg
+                                            : theme.status.warningBg,
+                                    },
+                                ]}
+                            >
+                                <View
+                                    style={[
+                                        relatedStyles.dotInner,
+                                        {
+                                            backgroundColor: isSuccess
+                                                ? theme.status.success
+                                                : theme.status.warning,
+                                        },
+                                    ]}
+                                />
+                            </View>
+                            <View style={relatedStyles.info}>
                                 <Text
                                     style={[
-                                        relatedStyles.rowAmount,
+                                        relatedStyles.amount,
                                         { color: theme.textPrimary },
                                     ]}
                                 >
-                                    {parseFloat(item.amount).toFixed(2)}{' '}
-                                    <Text style={{ color: theme.primary }}>{asset}</Text>
+                                    {item.amount}{' '}
+                                    <Text style={{ color: theme.primary }}>
+                                        {asset}
+                                    </Text>
                                 </Text>
                                 <Text
                                     style={[
-                                        relatedStyles.rowDate,
-                                        { color: theme.textMuted },
+                                        relatedStyles.date,
+                                        { color: theme.textSecondary },
                                     ]}
                                 >
-                                    {formatShortDate(item.timestamp)}
+                                    {formatDate(item.timestamp)}
+                                    {item.memo ? ` · ${item.memo}` : ''}
                                 </Text>
                             </View>
-                            <View style={relatedStyles.rowRight}>
-                                <View
-                                    style={[
-                                        relatedStyles.statusPill,
-                                        {
-                                            backgroundColor:
-                                                item.status === 'Success'
-                                                    ? theme.status.successBg
-                                                    : theme.status.warningBg,
-                                        },
-                                    ]}
-                                >
-                                    <Text
-                                        style={[
-                                            relatedStyles.statusText,
-                                            { color: statusColor },
-                                        ]}
-                                    >
-                                        {item.status}
-                                    </Text>
-                                </View>
-                                <Ionicons
-                                    name="chevron-forward"
-                                    size={14}
-                                    color={theme.textMuted}
-                                />
-                            </View>
+                            <Ionicons
+                                name="chevron-forward"
+                                size={16}
+                                color={theme.textMuted}
+                            />
                         </TouchableOpacity>
                     );
                 })}
@@ -383,49 +372,34 @@ function RelatedTransactions({
 }
 
 const relatedStyles = StyleSheet.create({
-    section: {
-        marginBottom: 24,
-    },
-    title: {
-        fontSize: 16,
-        fontWeight: '700',
-        marginBottom: 12,
-    },
-    card: {
-        borderRadius: 16,
-        borderWidth: 1,
-        overflow: 'hidden',
-    },
     row: {
         flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'space-between',
-        paddingHorizontal: 16,
-        paddingVertical: 14,
+        padding: 14,
+        gap: 12,
     },
-    rowLeft: {
-        gap: 2,
-    },
-    rowAmount: {
-        fontSize: 15,
-        fontWeight: '700',
-    },
-    rowDate: {
-        fontSize: 12,
-    },
-    rowRight: {
-        flexDirection: 'row',
+    dot: {
+        width: 32,
+        height: 32,
+        borderRadius: 16,
         alignItems: 'center',
-        gap: 6,
+        justifyContent: 'center',
     },
-    statusPill: {
-        paddingHorizontal: 8,
-        paddingVertical: 3,
-        borderRadius: 99,
+    dotInner: {
+        width: 10,
+        height: 10,
+        borderRadius: 5,
     },
-    statusText: {
-        fontSize: 11,
-        fontWeight: '700',
+    info: {
+        flex: 1,
+        gap: 3,
+    },
+    amount: {
+        fontSize: 15,
+        fontWeight: '600',
+    },
+    date: {
+        fontSize: 12,
     },
 });
 
@@ -966,12 +940,67 @@ export default function TransactionDetailScreen() {
                     </View>
                 </View>
 
+                {/* Fee Breakdown Section */}
+                {'feeBreakdown' in tx && tx.feeBreakdown && (
+                    <View style={styles.section}>
+                        <Text
+                            style={[
+                                styles.sectionTitle,
+                                { color: theme.textPrimary },
+                            ]}
+                        >
+                            Fee Breakdown
+                        </Text>
+                        <View
+                            style={[
+                                styles.card,
+                                {
+                                    backgroundColor: theme.surfaceElevated,
+                                    borderColor: theme.border,
+                                },
+                            ]}
+                        >
+                            {[
+                                { label: 'Network Fee', value: (tx as TransactionItem & { feeBreakdown: { networkFee: string; platformFee: string; totalFee: string } }).feeBreakdown.networkFee },
+                                { label: 'Platform Fee', value: (tx as TransactionItem & { feeBreakdown: { networkFee: string; platformFee: string; totalFee: string } }).feeBreakdown.platformFee },
+                                { label: 'Total Fee', value: (tx as TransactionItem & { feeBreakdown: { networkFee: string; platformFee: string; totalFee: string } }).feeBreakdown.totalFee },
+                            ].map((row, idx, arr) => (
+                                <CopyableRow
+                                    key={row.label}
+                                    label={row.label}
+                                    value={`${row.value} XLM`}
+                                    rawValue={row.value}
+                                    theme={theme}
+                                    isLast={idx === arr.length - 1}
+                                    onCopy={() => showCopyFeedback(row.label)}
+                                />
+                            ))}
+                        </View>
+                    </View>
+                )}
+
                 {/* Related Transactions Section */}
                 <RelatedTransactions
+                    currentId={tx.pagingToken}
                     source={tx.source}
                     destination={tx.destination}
-                    currentTxHash={tx.txHash}
                     theme={theme}
+                    onSelect={(related) => {
+                        router.push({
+                            pathname: '/transaction/[id]',
+                            params: {
+                                id: related.pagingToken,
+                                amount: related.amount,
+                                asset: related.asset,
+                                memo: related.memo,
+                                timestamp: related.timestamp,
+                                txHash: related.txHash,
+                                source: related.source,
+                                destination: related.destination,
+                                status: related.status,
+                            },
+                        });
+                    }}
                 />
 
                 {/* Share CTA */}

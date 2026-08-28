@@ -120,6 +120,7 @@ OperationsModule,
     PreviewScopeModule,
     TransactionTimelineModule,
     DashboardFeedModule,
+    TeamsModule,
     ];
 
     try {

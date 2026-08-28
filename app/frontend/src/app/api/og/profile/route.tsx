@@ -1,61 +1,63 @@
 /**
- * Dynamic Open Graph image for user profiles.
+ * GET /api/og/profile
+ * Dynamic Open Graph image for user profile pages.
  *
- * GET /api/og/profile?username=X
+ * Query params:
+ *   username  – QuickEx username (required)
  *
  * Edge-cached for 1 hour (Cache-Control: public, max-age=3600, s-maxage=3600).
- * Uses Next.js ImageResponse (built on @vercel/og / Satori).
+ * Falls back to default OG image when username is missing.
  *
- * Fallback: redirects to the default /api/og image when no username is given.
- *
- * Privacy: only the public username is rendered — no keys, balances, or
- * internal data.
+ * Uses Next.js ImageResponse (@vercel/og / Satori) — no external deps.
  */
 
 import { ImageResponse } from "next/og";
-import { type NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 
 export const runtime = "edge";
 
-const WIDTH  = 1200;
+const WIDTH = 1200;
 const HEIGHT = 630;
+const CACHE_TTL = 3600; // 1 hour
 
-// Brand colours
-const BG           = "#0a0a0a";
-const ACCENT       = "#6366f1";
+// Brand palette
+const BG = "#0a0a0a";
+const ACCENT = "#6366f1";
 const TEXT_PRIMARY = "#ffffff";
-const TEXT_MUTED   = "#a3a3a3";
-const CARD_BG      = "rgba(255,255,255,0.04)";
-const CARD_BORDER  = "rgba(255,255,255,0.08)";
+const TEXT_SECONDARY = "#a3a3a3";
+const CARD_BG = "rgba(255,255,255,0.04)";
+const CARD_BORDER = "rgba(255,255,255,0.08)";
 
 // ---------------------------------------------------------------------------
-// Sanitisation
+// Sanitisation (edge-safe)
 // ---------------------------------------------------------------------------
 
 function sanitizeUsername(v: string | null): string {
   if (!v) return "";
-  // Accept only alphanumeric, underscore, hyphen — match Stellar username rules
-  return v
-    .replace(/[^\w-]/g, "")
-    .slice(0, 32)
-    .trim();
+  return v.replace(/[^\w.\-]/g, "").slice(0, 32).trim();
 }
 
 // ---------------------------------------------------------------------------
 // Route handler
 // ---------------------------------------------------------------------------
 
-export async function GET(req: NextRequest): Promise<Response> {
+export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl;
   const username = sanitizeUsername(searchParams.get("username"));
 
   if (!username) {
-    return NextResponse.redirect(new URL("/api/og", req.url));
+    return new Response(null, {
+      status: 302,
+      headers: {
+        Location: "/api/og",
+        "Cache-Control": "no-store",
+      },
+    });
   }
 
-  const initial = username[0]?.toUpperCase() ?? "?";
+  const initial = username[0].toUpperCase();
 
-  const imageResponse = new ImageResponse(
+  const image = new ImageResponse(
     (
       <div
         style={{
@@ -70,7 +72,21 @@ export async function GET(req: NextRequest): Promise<Response> {
           position: "relative",
         }}
       >
-        {/* Background glow */}
+        {/* Top-left glow */}
+        <div
+          style={{
+            position: "absolute",
+            top: -80,
+            left: -80,
+            width: 500,
+            height: 500,
+            borderRadius: "50%",
+            background: ACCENT,
+            opacity: 0.06,
+            filter: "blur(100px)",
+          }}
+        />
+        {/* Bottom-right glow */}
         <div
           style={{
             position: "absolute",
@@ -117,8 +133,14 @@ export async function GET(req: NextRequest): Promise<Response> {
           @{username}
         </div>
 
-        {/* CTA */}
-        <div style={{ fontSize: 28, color: TEXT_MUTED, marginBottom: 40 }}>
+        {/* Sub-headline */}
+        <div
+          style={{
+            fontSize: 28,
+            color: TEXT_SECONDARY,
+            marginBottom: 48,
+          }}
+        >
           Send a payment on Stellar
         </div>
 
@@ -130,7 +152,7 @@ export async function GET(req: NextRequest): Promise<Response> {
             borderRadius: 100,
             padding: "10px 28px",
             fontSize: 20,
-            color: TEXT_MUTED,
+            color: TEXT_SECONDARY,
             display: "flex",
             alignItems: "center",
             gap: 10,
@@ -143,15 +165,14 @@ export async function GET(req: NextRequest): Promise<Response> {
     { width: WIDTH, height: HEIGHT },
   );
 
-  // Apply edge cache headers: 1h TTL, stale-while-revalidate 5m
-  const headers = new Headers(imageResponse.headers);
+  const headers = new Headers(image.headers);
   headers.set(
     "Cache-Control",
-    "public, max-age=3600, s-maxage=3600, stale-while-revalidate=300",
+    `public, max-age=${CACHE_TTL}, s-maxage=${CACHE_TTL}, stale-while-revalidate=60`,
   );
 
-  return new Response(imageResponse.body, {
-    status: imageResponse.status,
+  return new Response(image.body, {
+    status: image.status,
     headers,
   });
 }

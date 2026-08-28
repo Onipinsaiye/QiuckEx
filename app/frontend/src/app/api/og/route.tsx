@@ -123,18 +123,19 @@ export async function GET(req: NextRequest): Promise<Response> {
       : "UNKNOWN",
   };
 
-  const imageResponse = new ImageResponse(renderImage(params), {
+  const image = new ImageResponse(renderImage(params), {
     width: WIDTH,
     height: HEIGHT,
   });
 
-  // Edge cache: 1h TTL, stale-while-revalidate 5m
-  const headers = new Headers(imageResponse.headers);
+  // 1-hour edge cache
+  const headers = new Headers(image.headers);
   headers.set(
     "Cache-Control",
-    "public, max-age=3600, s-maxage=3600, stale-while-revalidate=300",
+    "public, max-age=3600, s-maxage=3600, stale-while-revalidate=60",
   );
-  return new Response(imageResponse.body, { status: imageResponse.status, headers });
+
+  return new Response(image.body, { status: image.status, headers });
 }
 
 // ---------------------------------------------------------------------------

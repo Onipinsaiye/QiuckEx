@@ -1,32 +1,35 @@
 /**
+ * GET /api/og/payment-link
  * Dynamic Open Graph image for payment links.
  *
- * GET /api/og/payment-link?username=X&amount=100&asset=XLM&state=ACTIVE
+ * Query params:
+ *   username  – QuickEx username (required)
+ *   amount    – numeric amount
+ *   asset     – asset code (default: XLM)
+ *   state     – ACTIVE | EXPIRED | PAID | REFUNDED | DRAFT | UNKNOWN
  *
  * Edge-cached for 1 hour (Cache-Control: public, max-age=3600, s-maxage=3600).
- * Uses Next.js ImageResponse (built on @vercel/og / Satori).
+ * Falls back to default OG image on invalid params.
  *
- * Fallback: redirects to the default /api/og image on missing params.
- *
- * Privacy: only username, amount, asset, and state are rendered.
- * No keys, hashes, or internal data are exposed.
+ * Uses Next.js ImageResponse (@vercel/og / Satori) — no external deps.
  */
 
 import { ImageResponse } from "next/og";
-import { type NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 
 export const runtime = "edge";
 
-const WIDTH  = 1200;
+const WIDTH = 1200;
 const HEIGHT = 630;
+const CACHE_TTL = 3600; // 1 hour
 
-// Brand colours
-const BG           = "#0a0a0a";
-const ACCENT       = "#6366f1";
+// Brand palette
+const BG = "#0a0a0a";
+const ACCENT = "#6366f1";
 const TEXT_PRIMARY = "#ffffff";
-const TEXT_MUTED   = "#a3a3a3";
-const CARD_BG      = "rgba(255,255,255,0.04)";
-const CARD_BORDER  = "rgba(255,255,255,0.08)";
+const TEXT_SECONDARY = "#a3a3a3";
+const CARD_BG = "rgba(255,255,255,0.04)";
+const CARD_BORDER = "rgba(255,255,255,0.08)";
 
 type PaymentState =
   | "ACTIVE"
@@ -37,15 +40,12 @@ type PaymentState =
   | "UNKNOWN";
 
 // ---------------------------------------------------------------------------
-// Sanitisation
+// Sanitisation helpers (edge-safe)
 // ---------------------------------------------------------------------------
 
-function sanitizeText(v: string | null, maxLen = 64): string {
+function sanitizeText(v: string | null, maxLen = 32): string {
   if (!v) return "";
-  return v
-    .replace(/[^\w\s\-_.#@]/g, "")
-    .slice(0, maxLen)
-    .trim();
+  return v.replace(/[^\w\s\-_.#@]/g, "").slice(0, maxLen).trim();
 }
 
 function sanitizeAmount(v: string | null): string {
@@ -60,26 +60,28 @@ function sanitizeAsset(v: string | null): string {
   return v.replace(/[^A-Z0-9]/gi, "").slice(0, 12).toUpperCase() || "XLM";
 }
 
-const VALID_STATES = new Set<string>([
-  "ACTIVE",
-  "EXPIRED",
-  "PAID",
-  "REFUNDED",
-  "DRAFT",
-  "UNKNOWN",
-]);
-
-function toState(v: string | null): PaymentState {
-  return VALID_STATES.has(v ?? "") ? (v as PaymentState) : "UNKNOWN";
+function isValidState(v: string | null): v is PaymentState {
+  return [
+    "ACTIVE",
+    "EXPIRED",
+    "PAID",
+    "REFUNDED",
+    "DRAFT",
+    "UNKNOWN",
+  ].includes(v ?? "");
 }
 
-function badgeColor(state: PaymentState): string {
+// ---------------------------------------------------------------------------
+// State helpers
+// ---------------------------------------------------------------------------
+
+function stateBadgeColor(state: PaymentState): string {
   switch (state) {
     case "ACTIVE":
     case "DRAFT":
       return "#22c55e";
     case "PAID":
-      return ACCENT;
+      return "#6366f1";
     case "EXPIRED":
       return "#f59e0b";
     case "REFUNDED":
@@ -90,38 +92,46 @@ function badgeColor(state: PaymentState): string {
 }
 
 function stateLabel(state: PaymentState): string {
-  return {
-    ACTIVE:   "Active",
-    DRAFT:    "Pending",
-    PAID:     "Paid",
-    EXPIRED:  "Expired",
+  const labels: Record<PaymentState, string> = {
+    ACTIVE: "Active",
+    DRAFT: "Pending",
+    PAID: "Paid",
+    EXPIRED: "Expired",
     REFUNDED: "Refunded",
-    UNKNOWN:  "Unavailable",
-  }[state];
+    UNKNOWN: "Unavailable",
+  };
+  return labels[state] ?? "Unavailable";
 }
 
 // ---------------------------------------------------------------------------
 // Route handler
 // ---------------------------------------------------------------------------
 
-export async function GET(req: NextRequest): Promise<Response> {
+export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl;
 
-  const username = sanitizeText(searchParams.get("username"), 32);
-  const amount   = sanitizeAmount(searchParams.get("amount"));
-  const asset    = sanitizeAsset(searchParams.get("asset"));
-  const state    = toState(searchParams.get("state"));
+  const username = sanitizeText(searchParams.get("username")) || undefined;
+  const amount = sanitizeAmount(searchParams.get("amount")) || undefined;
+  const asset = sanitizeAsset(searchParams.get("asset"));
+  const rawState = searchParams.get("state");
+  const state: PaymentState = isValidState(rawState) ? rawState : "UNKNOWN";
 
-  // Redirect to default image if no useful params
-  if (!username && !amount) {
-    return NextResponse.redirect(new URL("/api/og", req.url));
+  // Fallback: no username → return default OG
+  if (!username) {
+    return new Response(null, {
+      status: 302,
+      headers: {
+        Location: "/api/og",
+        "Cache-Control": "no-store",
+      },
+    });
   }
 
-  const color      = badgeColor(state);
-  const label      = stateLabel(state);
+  const badgeColor = stateBadgeColor(state);
+  const label = stateLabel(state);
   const isUnavailable = state === "EXPIRED" || state === "UNKNOWN";
 
-  const imageResponse = new ImageResponse(
+  const image = new ImageResponse(
     (
       <div
         style={{
@@ -151,6 +161,20 @@ export async function GET(req: NextRequest): Promise<Response> {
             filter: "blur(100px)",
           }}
         />
+        {/* Bottom-left glow */}
+        <div
+          style={{
+            position: "absolute",
+            bottom: -60,
+            left: -60,
+            width: 400,
+            height: 400,
+            borderRadius: "50%",
+            background: "#22c55e",
+            opacity: 0.04,
+            filter: "blur(80px)",
+          }}
+        />
 
         {/* Card */}
         <div
@@ -163,14 +187,14 @@ export async function GET(req: NextRequest): Promise<Response> {
             flexDirection: "column",
             alignItems: "center",
             width: "100%",
-            maxWidth: 900,
+            maxWidth: 920,
           }}
         >
-          {/* Site name */}
+          {/* Brand */}
           <div
             style={{
               fontSize: 22,
-              color: TEXT_MUTED,
+              color: TEXT_SECONDARY,
               marginBottom: 32,
               display: "flex",
               alignItems: "center",
@@ -183,12 +207,12 @@ export async function GET(req: NextRequest): Promise<Response> {
           {/* State badge */}
           <div
             style={{
-              background: `${color}22`,
-              border: `1px solid ${color}55`,
+              background: `${badgeColor}22`,
+              border: `1px solid ${badgeColor}55`,
               borderRadius: 100,
               padding: "6px 20px",
               fontSize: 18,
-              color: color,
+              color: badgeColor,
               fontWeight: 700,
               marginBottom: 28,
             }}
@@ -196,7 +220,7 @@ export async function GET(req: NextRequest): Promise<Response> {
             {label}
           </div>
 
-          {/* Content */}
+          {/* Main content */}
           {isUnavailable ? (
             <div
               style={{
@@ -224,22 +248,24 @@ export async function GET(req: NextRequest): Promise<Response> {
                   <span style={{ color: ACCENT }}>{asset}</span>
                 </div>
               )}
-              {username && (
-                <div
-                  style={{ fontSize: 32, color: TEXT_MUTED, marginTop: 8 }}
-                >
-                  to{" "}
-                  <span style={{ color: TEXT_PRIMARY, fontWeight: 700 }}>
-                    @{username}
-                  </span>
-                </div>
-              )}
+              <div
+                style={{
+                  fontSize: 32,
+                  color: TEXT_SECONDARY,
+                  marginTop: 8,
+                }}
+              >
+                to{" "}
+                <span style={{ color: TEXT_PRIMARY, fontWeight: 700 }}>
+                  @{username}
+                </span>
+              </div>
             </>
           )}
 
           {/* Footer */}
           <div
-            style={{ marginTop: 40, fontSize: 18, color: TEXT_MUTED }}
+            style={{ marginTop: 40, fontSize: 18, color: TEXT_SECONDARY }}
           >
             Powered by Stellar Network
           </div>
@@ -249,15 +275,15 @@ export async function GET(req: NextRequest): Promise<Response> {
     { width: WIDTH, height: HEIGHT },
   );
 
-  // Apply edge cache headers: 1h TTL, stale-while-revalidate 5m
-  const headers = new Headers(imageResponse.headers);
+  // Set 1-hour edge cache headers
+  const headers = new Headers(image.headers);
   headers.set(
     "Cache-Control",
-    "public, max-age=3600, s-maxage=3600, stale-while-revalidate=300",
+    `public, max-age=${CACHE_TTL}, s-maxage=${CACHE_TTL}, stale-while-revalidate=60`,
   );
 
-  return new Response(imageResponse.body, {
-    status: imageResponse.status,
+  return new Response(image.body, {
+    status: image.status,
     headers,
   });
 }

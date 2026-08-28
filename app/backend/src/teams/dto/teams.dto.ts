@@ -1,58 +1,57 @@
-import { IsEmail, IsEnum, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import {
+  IsEmail,
+  IsEnum,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  MaxLength,
+  MinLength,
+} from "class-validator";
+import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
+import { TeamRole } from "../teams.types";
 
-export type TeamRole = 'owner' | 'admin' | 'member' | 'viewer';
+const TEAM_ROLES: TeamRole[] = ["owner", "admin", "member", "viewer"];
 
 export class CreateTeamDto {
-  @ApiProperty({ description: 'Team name', example: 'Payments Team' })
+  @ApiProperty({ description: "Team name", example: "Engineering" })
   @IsString()
+  @IsNotEmpty()
   @MinLength(2)
-  @MaxLength(80)
-  name!: string;
-
-  @ApiPropertyOptional({ description: 'Team description' })
-  @IsOptional()
-  @IsString()
-  @MaxLength(300)
-  description?: string;
+  @MaxLength(64)
+  name: string;
 }
 
 export class InviteMemberDto {
-  @ApiProperty({ description: 'Email address of the invitee', example: 'user@example.com' })
+  @ApiProperty({ description: "Email address to invite", example: "dev@example.com" })
   @IsEmail()
-  email!: string;
+  email: string;
 
-  @ApiProperty({ description: 'Role to assign', enum: ['admin', 'member', 'viewer'] })
-  @IsEnum(['admin', 'member', 'viewer'])
-  role!: Exclude<TeamRole, 'owner'>;
+  @ApiProperty({ description: "Role to assign to the invited member", enum: TEAM_ROLES })
+  @IsEnum(TEAM_ROLES)
+  role: TeamRole;
+
+  @ApiPropertyOptional({ description: "Display name for the invite", example: "Alice" })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  name?: string;
 }
 
 export class UpdateMemberRoleDto {
-  @ApiProperty({ description: 'New role', enum: ['admin', 'member', 'viewer'] })
-  @IsEnum(['admin', 'member', 'viewer'])
-  role!: Exclude<TeamRole, 'owner'>;
+  @ApiProperty({ description: "New role for the member", enum: TEAM_ROLES })
+  @IsEnum(TEAM_ROLES)
+  role: TeamRole;
 }
 
-export class TeamMemberResponseDto {
-  @ApiProperty() id!: string;
-  @ApiProperty() email!: string;
-  @ApiProperty() role!: TeamRole;
-  @ApiProperty() joinedAt!: string;
-  @ApiProperty() lastActiveAt!: string | null;
-  @ApiProperty() status!: 'active' | 'pending';
+export class CreateInviteLinkDto {
+  @ApiProperty({ description: "Role for link recipients", enum: TEAM_ROLES })
+  @IsEnum(TEAM_ROLES)
+  role: TeamRole;
 }
 
-export class TeamResponseDto {
-  @ApiProperty() id!: string;
-  @ApiProperty() name!: string;
-  @ApiPropertyOptional() description?: string;
-  @ApiProperty() ownerPublicKey!: string;
-  @ApiProperty({ type: [TeamMemberResponseDto] }) members!: TeamMemberResponseDto[];
-  @ApiProperty() createdAt!: string;
-}
-
-export class InviteLinkResponseDto {
-  @ApiProperty() inviteToken!: string;
-  @ApiProperty() inviteUrl!: string;
-  @ApiProperty() expiresAt!: string;
+export class TransferOwnershipDto {
+  @ApiProperty({ description: "User ID of the new owner" })
+  @IsString()
+  @IsNotEmpty()
+  new_owner_id: string;
 }

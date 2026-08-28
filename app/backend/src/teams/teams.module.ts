@@ -1,7 +1,7 @@
-import { Module } from '@nestjs/common';
-import { SupabaseModule } from '../supabase/supabase.module';
-import { TeamsController } from './teams.controller';
-import { TeamsService } from './teams.service';
+import { Module } from "@nestjs/common";
+import { TeamsController } from "./teams.controller";
+import { TeamsService } from "./teams.service";
+import { SupabaseModule } from "../supabase/supabase.module";
 
 @Module({
   imports: [SupabaseModule],

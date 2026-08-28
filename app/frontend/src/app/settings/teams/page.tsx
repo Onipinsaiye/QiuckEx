@@ -3,18 +3,21 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { getQuickexApiBase } from "@/lib/api";
-import { resolvePublicKey } from "@/lib/publicKey";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-type TeamRole = "owner" | "admin" | "member" | "viewer";
+export type TeamRole = "owner" | "admin" | "member" | "viewer";
 
 interface TeamMember {
   id: string;
+  user_id: string;
   email: string;
+  name: string | null;
   role: TeamRole;
+  joined_at: string;
+  last_active_at: string | null;
   status: "active" | "pending";
   joinedAt: string;
   lastActiveAt: string | null;
@@ -144,62 +147,150 @@ function roleBadgeClass(role: TeamRole): string {
   }
 }
 
+interface TeamInfo {
+  id: string;
+  name: string;
+  owner_id: string;
+  member_count: number;
+  created_at: string;
+}
+
+interface InviteLink {
+  id: string;
+  team_id: string;
+  invite_url: string;
+  role: TeamRole;
+  expires_at: string;
+  created_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// API helpers
+// ---------------------------------------------------------------------------
+
+async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${getQuickexApiBase()}${path}`, {
+    ...init,
+    headers: { "Content-Type": "application/json", ...init?.headers },
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body?.message ?? `Request failed: ${res.status}`);
+  }
+  if (res.status === 204) return undefined as T;
+  return res.json() as Promise<T>;
+}
+
+function formatDate(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  try {
+    return new Date(iso).toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+  } catch {
+    return "—";
+  }
+}
+
+function formatTimeAgo(iso: string | null | undefined): string {
+  if (!iso) return "Never";
+  try {
+    const diff = Date.now() - new Date(iso).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return "Just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    return `${days}d ago`;
+  } catch {
+    return "—";
+  }
+}
+
+const ROLE_COLORS: Record<TeamRole, string> = {
+  owner: "text-indigo-400",
+  admin: "text-purple-400",
+  member: "text-emerald-400",
+  viewer: "text-slate-400",
+};
+
+const ROLES_ASSIGNABLE: TeamRole[] = ["admin", "member", "viewer"];
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
 export default function TeamSettings() {
-  const publicKey = resolvePublicKey();
+  const [team, setTeam] = useState<TeamInfo | null>(null);
+  const [members, setMembers] = useState<TeamMember[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const [teams, setTeams]               = useState<Team[]>([]);
-  const [selectedTeam, setSelectedTeam] = useState<Team | null>(null);
-  const [loading, setLoading]           = useState(true);
-  const [error, setError]               = useState<string | null>(null);
-  const [toastMsg, setToastMsg]         = useState<string | null>(null);
-
-  // Invite form state
-  const [inviteEmail, setInviteEmail]   = useState("");
-  const [inviteRole, setInviteRole]     = useState<Exclude<TeamRole, "owner">>("member");
-  const [inviting, setInviting]         = useState(false);
-
-  // New team form
-  const [newTeamName, setNewTeamName]   = useState("");
-  const [creatingTeam, setCreatingTeam] = useState(false);
-  const [showNewTeamForm, setShowNewTeamForm] = useState(false);
+  // Invite modal state
+  const [showInvite, setShowInvite] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteName, setInviteName] = useState("");
+  const [inviteRole, setInviteRole] = useState<TeamRole>("member");
+  const [inviting, setInviting] = useState(false);
+  const [inviteError, setInviteError] = useState<string | null>(null);
 
   // Invite link state
-  const [inviteLink, setInviteLink]     = useState<string | null>(null);
-  const [inviteLinkExpiry, setInviteLinkExpiry] = useState<string | null>(null);
+  const [inviteLink, setInviteLink] = useState<InviteLink | null>(null);
+  const [generatingLink, setGeneratingLink] = useState(false);
+  const [inviteLinkRole, setInviteLinkRole] = useState<TeamRole>("member");
+  const [linkCopied, setLinkCopied] = useState(false);
+
+  // Create team modal state
+  const [showCreateTeam, setShowCreateTeam] = useState(false);
+  const [newTeamName, setNewTeamName] = useState("");
+  const [creatingTeam, setCreatingTeam] = useState(false);
+
+  // Current user — in production this comes from auth context
+  const currentUserId = "current-user-id";
+
+  const currentMember = members.find((m) => m.user_id === currentUserId);
+  const currentRole: TeamRole = currentMember?.role ?? "viewer";
+  const isOwner = currentRole === "owner";
+  const isAdmin = currentRole === "admin" || isOwner;
 
   // ---------------------------------------------------------------------------
-  // Load teams
+  // Data loading
   // ---------------------------------------------------------------------------
 
-  const loadTeams = useCallback(async () => {
+  const loadTeamData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const data = await fetchTeams(publicKey);
-      setTeams(data);
-      if (data.length > 0 && !selectedTeam) {
-        setSelectedTeam(data[0]);
+      // Try to load from a known team id stored in localStorage
+      const storedTeamId =
+        typeof window !== "undefined"
+          ? window.localStorage.getItem("quickex.teamId")
+          : null;
+
+      if (!storedTeamId) {
+        setLoading(false);
+        return;
       }
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to load teams");
+
+      const [teamData, membersData] = await Promise.all([
+        apiFetch<TeamInfo>(`/teams/${storedTeamId}`),
+        apiFetch<TeamMember[]>(`/teams/${storedTeamId}/members`),
+      ]);
+      setTeam(teamData);
+      setMembers(membersData);
+    } catch (err) {
+      setError((err as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [publicKey, selectedTeam]);
-
-  useEffect(() => {
-    void loadTeams();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const showToast = (msg: string) => {
-    setToastMsg(msg);
-    setTimeout(() => setToastMsg(null), 3000);
-  };
+  useEffect(() => {
+    loadTeamData();
+  }, [loadTeamData]);
 
   // ---------------------------------------------------------------------------
   // Actions
@@ -209,97 +300,118 @@ export default function TeamSettings() {
     if (!newTeamName.trim()) return;
     setCreatingTeam(true);
     try {
-      const team = await createTeam(publicKey, newTeamName.trim());
-      setTeams((prev) => [...prev, team]);
-      setSelectedTeam(team);
+      const created = await apiFetch<TeamInfo>("/teams", {
+        method: "POST",
+        body: JSON.stringify({ name: newTeamName.trim() }),
+      });
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem("quickex.teamId", created.id);
+      }
+      setTeam(created);
+      setMembers([]);
+      setShowCreateTeam(false);
       setNewTeamName("");
-      setShowNewTeamForm(false);
-      showToast("Team created");
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to create team");
+      await loadTeamData();
+    } catch (err) {
+      setError((err as Error).message);
     } finally {
       setCreatingTeam(false);
     }
   };
 
-  const handleInvite = async () => {
-    if (!selectedTeam || !inviteEmail.trim()) return;
+  const handleInviteMember = async () => {
+    if (!team || !inviteEmail.trim()) return;
     setInviting(true);
+    setInviteError(null);
     try {
-      const member = await inviteMember(selectedTeam.id, publicKey, inviteEmail.trim(), inviteRole);
-      setSelectedTeam((prev) =>
-        prev ? { ...prev, members: [...prev.members, member] } : prev,
-      );
-      setTeams((prev) =>
-        prev.map((t) =>
-          t.id === selectedTeam.id
-            ? { ...t, members: [...t.members, member] }
-            : t,
-        ),
-      );
+      const member = await apiFetch<TeamMember>(`/teams/${team.id}/members`, {
+        method: "POST",
+        body: JSON.stringify({
+          email: inviteEmail.trim(),
+          name: inviteName.trim() || undefined,
+          role: inviteRole,
+        }),
+      });
+      setMembers((prev) => [...prev, member]);
+      setShowInvite(false);
       setInviteEmail("");
-      showToast(`Invited ${member.email}`);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to send invite");
+      setInviteName("");
+      setInviteRole("member");
+    } catch (err) {
+      setInviteError((err as Error).message);
     } finally {
       setInviting(false);
     }
   };
 
-  const handleRemoveMember = async (member: TeamMember) => {
-    if (!selectedTeam) return;
+  const handleRoleChange = async (member: TeamMember, newRole: TeamRole) => {
+    if (!team || !isAdmin) return;
+    if (newRole === "owner") return; // use transfer ownership
     try {
-      await removeMember(selectedTeam.id, member.id, publicKey);
-      const filtered = selectedTeam.members.filter((m) => m.id !== member.id);
-      setSelectedTeam({ ...selectedTeam, members: filtered });
-      setTeams((prev) =>
-        prev.map((t) =>
-          t.id === selectedTeam.id ? { ...t, members: filtered } : t,
-        ),
+      const updated = await apiFetch<TeamMember>(
+        `/teams/${team.id}/members/${member.id}/role`,
+        {
+          method: "PUT",
+          body: JSON.stringify({ role: newRole }),
+        },
       );
-      showToast(`Removed ${member.email}`);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to remove member");
+      setMembers((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
+    } catch (err) {
+      setError((err as Error).message);
     }
   };
 
-  const handleRoleChange = async (
-    member: TeamMember,
-    newRole: Exclude<TeamRole, "owner">,
-  ) => {
-    if (!selectedTeam) return;
+  const handleRemoveMember = async (member: TeamMember) => {
+    if (!team || !isOwner) return;
+    if (!window.confirm(`Remove ${member.email} from the team?`)) return;
     try {
-      const updated = await updateMemberRole(selectedTeam.id, member.id, newRole, publicKey);
-      const updatedMembers = selectedTeam.members.map((m) =>
-        m.id === updated.id ? updated : m,
-      );
-      setSelectedTeam({ ...selectedTeam, members: updatedMembers });
-      setTeams((prev) =>
-        prev.map((t) =>
-          t.id === selectedTeam.id ? { ...t, members: updatedMembers } : t,
-        ),
-      );
-      showToast("Role updated");
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to update role");
+      await apiFetch(`/teams/${team.id}/members/${member.id}`, {
+        method: "DELETE",
+      });
+      setMembers((prev) => prev.filter((m) => m.id !== member.id));
+    } catch (err) {
+      setError((err as Error).message);
     }
   };
 
   const handleGenerateInviteLink = async () => {
-    if (!selectedTeam) return;
+    if (!team) return;
+    setGeneratingLink(true);
     try {
-      const { inviteUrl, expiresAt } = await generateInviteLink(selectedTeam.id, publicKey);
-      setInviteLink(inviteUrl);
-      setInviteLinkExpiry(expiresAt);
-      showToast("Invite link generated (valid 7 days)");
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to generate invite link");
+      const link = await apiFetch<InviteLink>(`/teams/${team.id}/invite-link`, {
+        method: "POST",
+        body: JSON.stringify({ role: inviteLinkRole }),
+      });
+      setInviteLink(link);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setGeneratingLink(false);
     }
   };
 
-  const currentUserRole: TeamRole =
-    selectedTeam?.members.find((m) => m.email === publicKey)?.role ?? "viewer";
-  const canManage = currentUserRole === "owner" || currentUserRole === "admin";
+  const handleCopyLink = async () => {
+    if (!inviteLink) return;
+    try {
+      await navigator.clipboard.writeText(inviteLink.invite_url);
+      setLinkCopied(true);
+      setTimeout(() => setLinkCopied(false), 2000);
+    } catch {
+      // fallback
+    }
+  };
+
+  // ---------------------------------------------------------------------------
+  // Render helpers
+  // ---------------------------------------------------------------------------
+
+  const RoleBadge = ({ role }: { role: TeamRole }) => (
+    <span
+      className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-widest border border-current/20 ${ROLE_COLORS[role]}`}
+    >
+      {role}
+    </span>
+  );
 
   // ---------------------------------------------------------------------------
   // Render
@@ -308,129 +420,474 @@ export default function TeamSettings() {
   return (
     <div className="relative min-h-screen text-foreground">
       {/* Background glow */}
-      <div className="fixed top-[-20%] left-[-30%] w-[60%] h-[60%] bg-indigo-500/10 blur-[120px] rounded-full pointer-events-none" />
-
-      {/* Toast */}
-      {toastMsg && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-5 py-3 bg-card border border-border rounded-2xl shadow-xl text-sm font-semibold flex items-center gap-2 animate-in slide-in-from-bottom-4">
-          <span className="text-emerald-400">✓</span> {toastMsg}
-        </div>
-      )}
+      <div className="fixed top-[-20%] left-[-30%] w-[60%] h-[60%] bg-indigo-500/10 blur-[120px] rounded-full" />
 
       {/* Sidebar */}
       <aside className="hidden md:flex w-72 h-screen fixed left-0 top-0 border-r border-border bg-card backdrop-blur-3xl flex-col z-20">
-        <nav className="flex-1 px-4 py-10 space-y-2">
-          <Link href="/dashboard" className="flex items-center gap-3 px-4 py-3 text-subtle hover:text-foreground hover:bg-surface rounded-2xl font-semibold transition">
+        <nav className="flex-1 px-4 py-30 space-y-2">
+          <Link
+            href="/dashboard"
+            className="flex items-center gap-3 px-4 py-3 text-subtle hover:text-foreground hover:bg-surface rounded-2xl font-semibold transition"
+          >
             <span>📊</span> Dashboard
           </Link>
-          <Link href="/settings" className="flex items-center gap-3 px-4 py-3 text-subtle hover:text-foreground hover:bg-surface rounded-2xl font-semibold transition">
+          <Link
+            href="/settings"
+            className="flex items-center gap-3 px-4 py-3 text-subtle hover:text-foreground hover:bg-surface rounded-2xl font-semibold transition"
+          >
             <span>⚙️</span> Profile Settings
           </Link>
-          <Link href="/settings/teams" className="flex items-center gap-3 px-4 py-3 bg-surface border border-border rounded-2xl font-bold">
+          <Link
+            href="/settings/teams"
+            className="flex items-center gap-3 px-4 py-3 bg-surface border border-border rounded-2xl font-bold"
+          >
             <span className="text-indigo-400">👥</span> Team Management
+          </Link>
+          <Link
+            href="/settings/developer"
+            className="flex items-center gap-3 px-4 py-3 text-subtle hover:text-foreground hover:bg-surface rounded-2xl font-semibold transition"
+          >
+            <span>🔑</span> Developer
           </Link>
         </nav>
       </aside>
 
       <main className="relative z-10 p-4 sm:p-6 md:p-12 md:ml-72">
-        <header className="mb-10 flex items-start justify-between flex-wrap gap-4">
-          <div>
-            <h1 className="text-3xl font-black tracking-tight mb-2">Team Management</h1>
-            <p className="text-subtle font-medium">Manage members, roles, and workspace permissions.</p>
-          </div>
-          <button
-            onClick={() => setShowNewTeamForm(true)}
-            className="px-4 py-2 bg-indigo-500 hover:bg-indigo-400 text-white text-sm font-bold rounded-xl transition"
-          >
-            + New Team
-          </button>
+        {/* Page header */}
+        <header className="mb-10">
+          <h1 className="text-3xl font-black tracking-tight mb-2">
+            Team Management
+          </h1>
+          <p className="text-subtle font-medium">
+            Manage members, roles, and workspace permissions.
+          </p>
         </header>
 
-        {/* Tab nav */}
+        {/* Sub-nav */}
         <nav className="flex gap-3 mb-8">
-          <Link href="/settings" className="px-4 py-2 rounded-xl border border-border-strong text-sm font-semibold hover:bg-surface transition">
+          <Link
+            href="/settings"
+            className="px-4 py-2 rounded-xl border border-border-strong text-sm font-semibold hover:bg-surface transition"
+          >
             General
           </Link>
-          <Link href="/settings/teams" className="px-4 py-2 rounded-xl border border-border-strong bg-surface-strong text-sm font-semibold">
+          <Link
+            href="/settings/teams"
+            className="px-4 py-2 rounded-xl border border-border-strong bg-surface-strong text-sm font-semibold"
+          >
             Team
           </Link>
-          <Link href="/settings/developer" className="px-4 py-2 rounded-xl border border-border-strong text-sm font-semibold hover:bg-surface transition">
+          <Link
+            href="/settings/developer"
+            className="px-4 py-2 rounded-xl border border-border-strong text-sm font-semibold hover:bg-surface transition"
+          >
             Developer
           </Link>
         </nav>
 
         {/* Error banner */}
         {error && (
-          <div className="mb-6 p-4 rounded-2xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm flex items-center gap-3">
-            <span>⚠️</span>
+          <div className="mb-6 p-4 rounded-2xl bg-red-500/10 border border-red-500/30 text-red-400 text-sm font-medium flex items-center justify-between">
             <span>{error}</span>
-            <button onClick={() => setError(null)} className="ml-auto text-red-400 hover:text-red-300">✕</button>
+            <button
+              onClick={() => setError(null)}
+              className="ml-4 text-red-400 hover:text-red-300 transition"
+              aria-label="Dismiss error"
+            >
+              ✕
+            </button>
           </div>
         )}
 
-        {/* New team form */}
-        {showNewTeamForm && (
-          <div className="mb-8 p-6 rounded-3xl bg-card border border-border">
-            <h2 className="text-lg font-bold mb-4">Create a new team</h2>
-            <div className="flex gap-3">
+        {/* No team yet */}
+        {!loading && !team && (
+          <div className="rounded-3xl bg-card border border-border p-12 text-center">
+            <div className="text-5xl mb-4">👥</div>
+            <h2 className="text-xl font-bold mb-2">No Team Yet</h2>
+            <p className="text-subtle text-sm mb-6">
+              Create a team workspace to collaborate with others.
+            </p>
+            <button
+              onClick={() => setShowCreateTeam(true)}
+              className="px-6 py-3 bg-indigo-500 text-white text-sm font-bold rounded-xl hover:bg-indigo-400 transition"
+            >
+              + Create Team
+            </button>
+          </div>
+        )}
+
+        {/* Loading */}
+        {loading && (
+          <div className="rounded-3xl bg-card border border-border p-12 text-center">
+            <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+            <p className="text-subtle text-sm">Loading team data…</p>
+          </div>
+        )}
+
+        {/* Team content */}
+        {!loading && team && (
+          <>
+            {/* Team info header */}
+            <div className="mb-6 p-6 rounded-2xl bg-card border border-border flex items-center justify-between flex-wrap gap-4">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 rounded-2xl bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center text-xl font-black text-indigo-400">
+                  {team.name[0]?.toUpperCase()}
+                </div>
+                <div>
+                  <h2 className="text-lg font-black">{team.name}</h2>
+                  <p className="text-xs text-subtle">
+                    {team.member_count} member{team.member_count !== 1 ? "s" : ""} · Created{" "}
+                    {formatDate(team.created_at)}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <RoleBadge role={currentRole} />
+              </div>
+            </div>
+
+            {/* Members table */}
+            <div className="rounded-3xl bg-card border border-border overflow-hidden mb-8">
+              <div className="p-6 border-b border-border flex justify-between items-center flex-wrap gap-3">
+                <h2 className="text-xl font-bold">Workspace Members</h2>
+                {isAdmin && (
+                  <button
+                    onClick={() => setShowInvite(true)}
+                    className="px-4 py-2 bg-indigo-500 text-white text-sm font-bold rounded-xl hover:bg-indigo-400 transition"
+                  >
+                    + Invite Member
+                  </button>
+                )}
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="text-subtle text-xs font-bold uppercase tracking-wider border-b border-border">
+                      <th className="px-6 py-4">Member</th>
+                      <th className="px-6 py-4">Role</th>
+                      <th className="px-6 py-4">Joined</th>
+                      <th className="px-6 py-4">Last Active</th>
+                      <th className="px-6 py-4">Status</th>
+                      {isOwner && (
+                        <th className="px-6 py-4 text-right">Actions</th>
+                      )}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {members.map((member) => {
+                      const isSelf = member.user_id === currentUserId;
+                      const isOwnerMember = member.role === "owner";
+                      const canChangeRole =
+                        isAdmin && !isSelf && !isOwnerMember;
+                      const canRemove = isOwner && !isSelf && !isOwnerMember;
+
+                      return (
+                        <tr
+                          key={member.id}
+                          className="hover:bg-white/[0.02] transition"
+                        >
+                          <td className="px-6 py-4">
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 bg-surface-strong rounded-full flex items-center justify-center font-bold text-indigo-400 shrink-0">
+                                {(member.name ?? member.email)[0]?.toUpperCase()}
+                              </div>
+                              <div>
+                                <p className="font-bold">
+                                  {member.name ?? "—"}
+                                  {isSelf && (
+                                    <span className="ml-2 text-[10px] text-indigo-400 font-black">
+                                      (you)
+                                    </span>
+                                  )}
+                                </p>
+                                <p className="text-xs text-subtle">{member.email}</p>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4">
+                            {canChangeRole ? (
+                              <select
+                                value={member.role}
+                                onChange={(e) =>
+                                  handleRoleChange(member, e.target.value as TeamRole)
+                                }
+                                className="bg-card border border-border-strong rounded-lg px-2 py-1 text-sm outline-none focus:border-indigo-500 transition"
+                              >
+                                {ROLES_ASSIGNABLE.map((r) => (
+                                  <option key={r} value={r}>
+                                    {r.charAt(0).toUpperCase() + r.slice(1)}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              <RoleBadge role={member.role} />
+                            )}
+                          </td>
+                          <td className="px-6 py-4 text-sm text-subtle">
+                            {formatDate(member.joined_at)}
+                          </td>
+                          <td className="px-6 py-4 text-sm text-subtle">
+                            {formatTimeAgo(member.last_active_at)}
+                          </td>
+                          <td className="px-6 py-4">
+                            <span
+                              className={`px-2 py-1 rounded-md text-[10px] font-black uppercase tracking-widest ${
+                                member.status === "active"
+                                  ? "bg-emerald-500/10 text-emerald-400"
+                                  : "bg-amber-500/10 text-amber-400"
+                              }`}
+                            >
+                              {member.status}
+                            </span>
+                          </td>
+                          {isOwner && (
+                            <td className="px-6 py-4 text-right">
+                              <button
+                                onClick={() => handleRemoveMember(member)}
+                                disabled={!canRemove}
+                                className="p-2 text-subtle hover:text-red-400 transition disabled:opacity-20 disabled:cursor-not-allowed"
+                                title={canRemove ? "Remove member" : undefined}
+                                aria-label={`Remove ${member.email}`}
+                              >
+                                🗑️
+                              </button>
+                            </td>
+                          )}
+                        </tr>
+                      );
+                    })}
+                    {members.length === 0 && (
+                      <tr>
+                        <td
+                          colSpan={isOwner ? 6 : 5}
+                          className="px-6 py-12 text-center text-subtle text-sm"
+                        >
+                          No members yet. Invite someone to get started.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Invite link section */}
+            {isAdmin && (
+              <div className="rounded-3xl bg-card border border-border p-6 mb-8">
+                <h3 className="text-lg font-bold mb-1">Invite Link</h3>
+                <p className="text-sm text-subtle mb-4">
+                  Generate a shareable link valid for 7 days. Anyone with the link joins with
+                  the selected role.
+                </p>
+                <div className="flex flex-wrap items-center gap-3">
+                  <select
+                    value={inviteLinkRole}
+                    onChange={(e) => setInviteLinkRole(e.target.value as TeamRole)}
+                    className="bg-card border border-border-strong rounded-xl px-3 py-2 text-sm outline-none focus:border-indigo-500 transition"
+                  >
+                    {ROLES_ASSIGNABLE.map((r) => (
+                      <option key={r} value={r}>
+                        {r.charAt(0).toUpperCase() + r.slice(1)}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={handleGenerateInviteLink}
+                    disabled={generatingLink}
+                    className="px-4 py-2 bg-indigo-500 text-white text-sm font-bold rounded-xl hover:bg-indigo-400 transition disabled:opacity-50"
+                  >
+                    {generatingLink ? "Generating…" : "Generate Link"}
+                  </button>
+                </div>
+                {inviteLink && (
+                  <div className="mt-4 p-4 rounded-2xl bg-surface border border-border flex flex-col sm:flex-row items-start sm:items-center gap-3">
+                    <code className="text-xs text-indigo-300 break-all flex-1">
+                      {inviteLink.invite_url}
+                    </code>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-xs text-subtle">
+                        Expires {formatDate(inviteLink.expires_at)}
+                      </span>
+                      <button
+                        onClick={handleCopyLink}
+                        className="px-3 py-1.5 bg-indigo-500/20 text-indigo-300 text-xs font-bold rounded-lg hover:bg-indigo-500/30 transition"
+                      >
+                        {linkCopied ? "✓ Copied" : "Copy"}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Role descriptions */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              {(
+                [
+                  {
+                    role: "owner" as TeamRole,
+                    color: "text-indigo-400",
+                    desc: "Full control — can delete the team, transfer ownership, and manage all members.",
+                  },
+                  {
+                    role: "admin" as TeamRole,
+                    color: "text-purple-400",
+                    desc: "Can invite/remove members and change roles (except owner).",
+                  },
+                  {
+                    role: "member" as TeamRole,
+                    color: "text-emerald-400",
+                    desc: "Can manage links and view analytics, but cannot manage team settings.",
+                  },
+                  {
+                    role: "viewer" as TeamRole,
+                    color: "text-slate-400",
+                    desc: "Read-only access to dashboard and analytics. Cannot perform any actions.",
+                  },
+                ] as const
+              ).map(({ role, color, desc }) => (
+                <div
+                  key={role}
+                  className="p-5 rounded-2xl bg-surface border border-border"
+                >
+                  <p className={`${color} font-black text-xs uppercase tracking-widest mb-2`}>
+                    {role}
+                  </p>
+                  <p className="text-sm text-subtle">{desc}</p>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </main>
+
+      {/* ------------------------------------------------------------------- */}
+      {/* Invite member modal                                                  */}
+      {/* ------------------------------------------------------------------- */}
+      {showInvite && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md bg-card border border-border rounded-3xl p-8 shadow-2xl">
+            <h3 className="text-xl font-black mb-1">Invite Member</h3>
+            <p className="text-subtle text-sm mb-6">
+              Send an invitation to a new team member.
+            </p>
+
+            {inviteError && (
+              <p className="mb-4 text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-xl p-3">
+                {inviteError}
+              </p>
+            )}
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-subtle mb-1 uppercase tracking-wider">
+                  Email *
+                </label>
+                <input
+                  type="email"
+                  value={inviteEmail}
+                  onChange={(e) => setInviteEmail(e.target.value)}
+                  placeholder="colleague@example.com"
+                  className="w-full bg-surface border border-border-strong rounded-xl px-4 py-3 text-sm outline-none focus:border-indigo-500 transition"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-subtle mb-1 uppercase tracking-wider">
+                  Name (optional)
+                </label>
+                <input
+                  type="text"
+                  value={inviteName}
+                  onChange={(e) => setInviteName(e.target.value)}
+                  placeholder="Alice"
+                  className="w-full bg-surface border border-border-strong rounded-xl px-4 py-3 text-sm outline-none focus:border-indigo-500 transition"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-subtle mb-1 uppercase tracking-wider">
+                  Role *
+                </label>
+                <select
+                  value={inviteRole}
+                  onChange={(e) => setInviteRole(e.target.value as TeamRole)}
+                  className="w-full bg-surface border border-border-strong rounded-xl px-4 py-3 text-sm outline-none focus:border-indigo-500 transition"
+                >
+                  {ROLES_ASSIGNABLE.map((r) => (
+                    <option key={r} value={r}>
+                      {r.charAt(0).toUpperCase() + r.slice(1)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="mt-6 flex gap-3">
+              <button
+                onClick={() => {
+                  setShowInvite(false);
+                  setInviteError(null);
+                  setInviteEmail("");
+                  setInviteName("");
+                  setInviteRole("member");
+                }}
+                className="flex-1 px-4 py-3 border border-border-strong rounded-xl text-sm font-bold hover:bg-surface transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleInviteMember}
+                disabled={inviting || !inviteEmail.trim()}
+                className="flex-1 px-4 py-3 bg-indigo-500 text-white rounded-xl text-sm font-bold hover:bg-indigo-400 transition disabled:opacity-50"
+              >
+                {inviting ? "Inviting…" : "Send Invite"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------------- */}
+      {/* Create team modal                                                    */}
+      {/* ------------------------------------------------------------------- */}
+      {showCreateTeam && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md bg-card border border-border rounded-3xl p-8 shadow-2xl">
+            <h3 className="text-xl font-black mb-1">Create Team</h3>
+            <p className="text-subtle text-sm mb-6">
+              Start a new workspace for your team.
+            </p>
+            <div>
+              <label className="block text-xs font-bold text-subtle mb-1 uppercase tracking-wider">
+                Team Name *
+              </label>
               <input
                 type="text"
                 value={newTeamName}
                 onChange={(e) => setNewTeamName(e.target.value)}
-                placeholder="Team name"
-                onKeyDown={(e) => e.key === "Enter" && void handleCreateTeam()}
-                className="flex-1 bg-surface border border-border-strong rounded-xl px-4 py-2 text-sm outline-none focus:border-indigo-500 transition"
+                placeholder="Engineering"
+                maxLength={64}
+                className="w-full bg-surface border border-border-strong rounded-xl px-4 py-3 text-sm outline-none focus:border-indigo-500 transition"
               />
+            </div>
+            <div className="mt-6 flex gap-3">
               <button
-                onClick={() => void handleCreateTeam()}
-                disabled={creatingTeam || !newTeamName.trim()}
-                className="px-5 py-2 bg-indigo-500 hover:bg-indigo-400 disabled:opacity-50 text-white text-sm font-bold rounded-xl transition"
-              >
-                {creatingTeam ? "Creating…" : "Create"}
-              </button>
-              <button
-                onClick={() => { setShowNewTeamForm(false); setNewTeamName(""); }}
-                className="px-4 py-2 text-sm text-subtle hover:text-foreground border border-border rounded-xl transition"
+                onClick={() => {
+                  setShowCreateTeam(false);
+                  setNewTeamName("");
+                }}
+                className="flex-1 px-4 py-3 border border-border-strong rounded-xl text-sm font-bold hover:bg-surface transition"
               >
                 Cancel
               </button>
-            </div>
-          </div>
-        )}
-
-        {/* Team selector (if multiple) */}
-        {teams.length > 1 && (
-          <div className="mb-6 flex gap-3 flex-wrap">
-            {teams.map((t) => (
               <button
-                key={t.id}
-                onClick={() => setSelectedTeam(t)}
-                className={`px-4 py-2 rounded-xl border text-sm font-semibold transition ${
-                  selectedTeam?.id === t.id
-                    ? "bg-indigo-500/10 border-indigo-500/30 text-indigo-400"
-                    : "border-border text-subtle hover:text-foreground hover:bg-surface"
-                }`}
+                onClick={handleCreateTeam}
+                disabled={creatingTeam || !newTeamName.trim()}
+                className="flex-1 px-4 py-3 bg-indigo-500 text-white rounded-xl text-sm font-bold hover:bg-indigo-400 transition disabled:opacity-50"
               >
-                {t.name}
+                {creatingTeam ? "Creating…" : "Create Team"}
               </button>
-            ))}
-          </div>
-        )}
-
-        {loading ? (
-          <div className="flex items-center justify-center py-24">
-            <div className="h-8 w-8 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />
-          </div>
-        ) : teams.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-24 gap-4">
-            <div className="text-5xl">👥</div>
-            <p className="text-subtle font-medium">No teams yet. Create one to get started.</p>
-            <button
-              onClick={() => setShowNewTeamForm(true)}
-              className="px-5 py-2.5 bg-indigo-500 hover:bg-indigo-400 text-white text-sm font-bold rounded-xl transition"
-            >
-              + New Team
-            </button>
+            </div>
           </div>
         ) : selectedTeam ? (
           <>
@@ -601,7 +1058,7 @@ export default function TeamSettings() {
             </div>
           ))}
         </div>
-      </main>
+      )}
     </div>
   );
 }
