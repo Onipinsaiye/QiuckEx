@@ -21,7 +21,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../src/theme/ThemeContext';
 import { StatusTimeline } from '../../components/transaction/StatusTimeline';
 import { CopyableRow } from '../../components/transaction/CopyableRow';
-import { findTransactionInCache } from '../../services/cache';
+import { findTransactionInCache, findRelatedTransactions } from '../../services/cache';
 import type { TransactionItem } from '../../types/transaction';
 
 const fileSystemCompat = FileSystem as typeof FileSystem & {
@@ -233,6 +233,201 @@ function buildReceiptSvg(
 </svg>
   `.trim();
 }
+
+// ---------------------------------------------------------------------------
+// Related Transactions sub-component (#97)
+// Shows recent transactions involving the same counterparty (source/destination)
+// ---------------------------------------------------------------------------
+
+interface RelatedTransactionsProps {
+    source: string | undefined;
+    destination: string | undefined;
+    currentTxHash: string | undefined;
+    theme: ReturnType<typeof useTheme>['theme'];
+}
+
+function RelatedTransactions({
+    source,
+    destination,
+    currentTxHash,
+    theme,
+}: RelatedTransactionsProps) {
+    const router = useRouter();
+    const [related, setRelated] = useState<TransactionItem[]>([]);
+    const [loadingRelated, setLoadingRelated] = useState(true);
+
+    useEffect(() => {
+        let cancelled = false;
+        setLoadingRelated(true);
+
+        findRelatedTransactions({ source, destination, excludeTxHash: currentTxHash })
+            .then((items) => {
+                if (!cancelled) setRelated(items.slice(0, 5));
+            })
+            .catch(() => {
+                /* silently ignore cache miss */
+            })
+            .finally(() => {
+                if (!cancelled) setLoadingRelated(false);
+            });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [source, destination, currentTxHash]);
+
+    if (loadingRelated) return null;
+    if (related.length === 0) return null;
+
+    return (
+        <View style={relatedStyles.section}>
+            <Text style={[relatedStyles.title, { color: theme.textPrimary }]}>
+                Related Transactions
+            </Text>
+            <View
+                style={[
+                    relatedStyles.card,
+                    {
+                        backgroundColor: theme.surfaceElevated,
+                        borderColor: theme.border,
+                    },
+                ]}
+            >
+                {related.map((item, index) => {
+                    const asset = formatAsset(item.asset);
+                    const isLast = index === related.length - 1;
+                    const statusColor =
+                        item.status === 'Success'
+                            ? theme.status.success
+                            : theme.status.warning;
+                    return (
+                        <TouchableOpacity
+                            key={item.txHash ?? item.pagingToken}
+                            onPress={() =>
+                                router.push({
+                                    pathname: '/transaction/[id]',
+                                    params: {
+                                        id: item.pagingToken,
+                                        amount: item.amount,
+                                        asset: item.asset,
+                                        memo: item.memo ?? '',
+                                        timestamp: item.timestamp,
+                                        txHash: item.txHash,
+                                        source: item.source,
+                                        destination: item.destination,
+                                        status: item.status,
+                                    },
+                                })
+                            }
+                            style={[
+                                relatedStyles.row,
+                                !isLast && {
+                                    borderBottomWidth: StyleSheet.hairlineWidth,
+                                    borderBottomColor: theme.border,
+                                },
+                            ]}
+                            activeOpacity={0.7}
+                        >
+                            <View style={relatedStyles.rowLeft}>
+                                <Text
+                                    style={[
+                                        relatedStyles.rowAmount,
+                                        { color: theme.textPrimary },
+                                    ]}
+                                >
+                                    {parseFloat(item.amount).toFixed(2)}{' '}
+                                    <Text style={{ color: theme.primary }}>{asset}</Text>
+                                </Text>
+                                <Text
+                                    style={[
+                                        relatedStyles.rowDate,
+                                        { color: theme.textMuted },
+                                    ]}
+                                >
+                                    {formatShortDate(item.timestamp)}
+                                </Text>
+                            </View>
+                            <View style={relatedStyles.rowRight}>
+                                <View
+                                    style={[
+                                        relatedStyles.statusPill,
+                                        {
+                                            backgroundColor:
+                                                item.status === 'Success'
+                                                    ? theme.status.successBg
+                                                    : theme.status.warningBg,
+                                        },
+                                    ]}
+                                >
+                                    <Text
+                                        style={[
+                                            relatedStyles.statusText,
+                                            { color: statusColor },
+                                        ]}
+                                    >
+                                        {item.status}
+                                    </Text>
+                                </View>
+                                <Ionicons
+                                    name="chevron-forward"
+                                    size={14}
+                                    color={theme.textMuted}
+                                />
+                            </View>
+                        </TouchableOpacity>
+                    );
+                })}
+            </View>
+        </View>
+    );
+}
+
+const relatedStyles = StyleSheet.create({
+    section: {
+        marginBottom: 24,
+    },
+    title: {
+        fontSize: 16,
+        fontWeight: '700',
+        marginBottom: 12,
+    },
+    card: {
+        borderRadius: 16,
+        borderWidth: 1,
+        overflow: 'hidden',
+    },
+    row: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        paddingHorizontal: 16,
+        paddingVertical: 14,
+    },
+    rowLeft: {
+        gap: 2,
+    },
+    rowAmount: {
+        fontSize: 15,
+        fontWeight: '700',
+    },
+    rowDate: {
+        fontSize: 12,
+    },
+    rowRight: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+    },
+    statusPill: {
+        paddingHorizontal: 8,
+        paddingVertical: 3,
+        borderRadius: 99,
+    },
+    statusText: {
+        fontSize: 11,
+        fontWeight: '700',
+    },
+});
 
 export default function TransactionDetailScreen() {
     const { theme, isDark } = useTheme();
@@ -770,6 +965,14 @@ export default function TransactionDetailScreen() {
                         />
                     </View>
                 </View>
+
+                {/* Related Transactions Section */}
+                <RelatedTransactions
+                    source={tx.source}
+                    destination={tx.destination}
+                    currentTxHash={tx.txHash}
+                    theme={theme}
+                />
 
                 {/* Share CTA */}
                 <TouchableOpacity
